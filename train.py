@@ -99,7 +99,7 @@ def main():
     best_content = None
     for epoch in range(conf['epochs']):
         ######### Denoising Uer-Bundle Graph ###########
-        diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].A))
+        diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].toarray()))
         diffusionLoader = torch.utils.data.DataLoader(diffusionDataset, batch_size=conf["batch_size_train"], shuffle=True, num_workers=0)
         total_steps = (diffusionDataset.__len__() + conf["batch_size_train"] - 1) // conf["batch_size_train"]
         pbar_diffusion = tqdm(enumerate(diffusionLoader), total=total_steps)
@@ -148,7 +148,7 @@ def main():
             norm_adjacency = degree_matrix.dot(adjacency_matrix).dot(degree_matrix).tocoo()
             values = norm_adjacency.data
             indices = np.vstack((norm_adjacency.row, norm_adjacency.col))
-            UB_propagation_graph = torch.sparse.FloatTensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(norm_adjacency.shape)).to(device)
+            UB_propagation_graph = torch.sparse_coo_tensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(norm_adjacency.shape)).to(device)
             
         ################################################
 
