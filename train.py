@@ -20,6 +20,8 @@ def set_seed(seed=0):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+        # Add env var for CUDA launch blocking in case of errors
+        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
 def get_cmd():
@@ -162,6 +164,8 @@ def main():
 
             bpr_loss, cl_loss = model(UB_propagation_graph, batch)
             loss = bpr_loss + cl_loss
+            
+            # Use PyTorch autograd anomaly detection or standard backward
             loss.backward()
             optimizer.step()
 
