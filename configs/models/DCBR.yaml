@@ -98,21 +98,21 @@ Youshu:
   noise_max: 0.02
   sampling_noise: False
   sampling_steps: 0
-  rebuild_k: 1
+  rebuild_k: 2
   lambda_0: 1.0e+3
 
   num_layers: 2
   upsilon_UB: 0.05
-  upsilon_UI: 0.0
+  upsilon_UI: 0.05
   upsilon_BI: 0.1
   xi_UB: [0.6, 0.3, 0.1]
-  xi_UI: [0.4, 0.6, 0.0]
+  xi_UI: [0.3, 0.4, 0.3]
   xi_BI: [0.5, 0.4, 0.1]
-  omega: 0.0
+  omega: 0.1
 
-  gamma_1: 0.3
-  gamma_2: 0.2
-  tau: 0.2
+  gamma_1: 0.1
+  gamma_2: 0.1
+  tau: 0.1
   lambda_1: 0.01
   lambda_2: 1.0e-5
   epochs: 110
