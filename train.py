@@ -132,8 +132,8 @@ def main():
                 _, indices_ = torch.topk(denoised_batch, k=conf["rebuild_k"])
                 for i in range(batch_user_index.shape[0]):
                     for j in range(indices_[i].shape[0]): 
-                        u_list_ub.append(int(batch_user_index[i].cpu().numpy()))
-                        b_list_ub.append(int(indices_[i][j].cpu().numpy()))
+                        u_list_ub.append(int(batch_user_index[i].item()))
+                        b_list_ub.append(int(indices_[i][j].item()))
                         edge_list_ub.append(1.0)
             u_list_ub = np.array(u_list_ub)
             b_list_ub = np.array(b_list_ub)
