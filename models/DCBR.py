@@ -241,7 +241,7 @@ class DNN(nn.Module):
 
 
     def forward(self, x, timesteps, use_dropout=True, max_period=10000):
-        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=self.time_emb_dim // 2, dtype=torch.float32) / (self.time_emb_dim // 2)).cuda()
+        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=self.time_emb_dim // 2, dtype=torch.float32, device=x.device) / (self.time_emb_dim // 2))
         args = timesteps[:, None].float() * freqs[None]
         timestep_embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if self.time_emb_dim % 2:
@@ -263,17 +263,17 @@ class DNN(nn.Module):
 
 
 class GaussianDiffusion(nn.Module):
-    def __init__(self, noise_scale, noise_min, noise_max, steps, beta_fixed=True):
+    def __init__(self, conf, noise_scale, noise_min, noise_max, steps, beta_fixed=True):
         super(GaussianDiffusion, self).__init__()
         self.noise_scale = noise_scale
         self.noise_min = noise_min
         self.noise_max = noise_max
         self.steps = steps
-        if noise_scale != 0:
-            self.betas = torch.tensor(self.get_betas(), dtype=torch.float64).cuda()
+        if self.noise_scale != 0:
+            self.betas = torch.tensor(self.get_betas(), dtype=torch.float64, device=conf["device"] if "device" in conf else "cuda")
             if beta_fixed:
                 self.betas[0] = 0.0001
-            self.calculate_for_diffusion()
+            self.calculate_for_diffusion(device=conf["device"] if "device" in conf else "cuda")
 
 
     def get_betas(self, max_beta=0.999):
@@ -288,11 +288,11 @@ class GaussianDiffusion(nn.Module):
         return np.array(betas) 
 
 
-    def calculate_for_diffusion(self):
+    def calculate_for_diffusion(self, device="cuda"):
         alphas = 1.0 - self.betas
-        self.alphas_cumprod = torch.cumprod(alphas, axis=0).cuda()
-        self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0]).cuda(), self.alphas_cumprod[:-1]]).cuda()
-        self.alphas_cumprod_next = torch.cat([self.alphas_cumprod[1:], torch.tensor([0.0]).cuda()]).cuda()
+        self.alphas_cumprod = torch.cumprod(alphas, axis=0).to(device)
+        self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0], device=device), self.alphas_cumprod[:-1]]).to(device)
+        self.alphas_cumprod_next = torch.cat([self.alphas_cumprod[1:], torch.tensor([0.0], device=device)]).to(device)
 
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
@@ -307,10 +307,11 @@ class GaussianDiffusion(nn.Module):
 
 
     def p_sample(self, model, x_start, steps, sampling_noise=False):
+        device = x_start.device
         if steps == 0:
             x_t = x_start
         else:
-            t = torch.tensor([steps - 1] * x_start.shape[0]).cuda()
+            t = torch.tensor([steps - 1] * x_start.shape[0], device=device)
             x_t = self.q_sample(x_start, t)
         
         indices = list(range(self.steps))[::-1]
@@ -322,7 +323,7 @@ class GaussianDiffusion(nn.Module):
             return x_t
         
         for i in indices:
-            t = torch.tensor([i] * x_t.shape[0]).cuda()
+            t = torch.tensor([i] * x_t.shape[0], device=device)
             out = self.p_mean_variance(model, x_t, t)
             if sampling_noise:
                 noise = torch.randn_like(x_t)
@@ -334,8 +335,9 @@ class GaussianDiffusion(nn.Module):
 
 
     def training_CBDM_losses(self, model, x_start, U_Embeds, B_Embeds, batch_user_index):
+        device = x_start.device
         batch_size = x_start.size(0)
-        ts = torch.randint(0, self.steps, (batch_size,)).long().cuda()
+        ts = torch.randint(0, self.steps, (batch_size,), device=device).long()
         noise = torch.randn_like(x_start)
         if self.noise_scale != 0:
             x_t = self.q_sample(x_start, ts, noise)
@@ -357,11 +359,11 @@ class GaussianDiffusion(nn.Module):
     def q_sample(self, x_start, t, noise=None):
         if noise is None:
             noise = torch.randn_like(x_start)
-        return self._extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start + self._extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+        return self._extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape, x_start.device) * x_start + self._extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape, x_start.device) * noise
 
 
     def q_posterior_mean_variance(self, x_start, x_t, t):
-        posterior_mean = self._extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start + self._extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
+        posterior_mean = self._extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape, x_start.device) * x_start + self._extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape, x_start.device) * x_t
         return posterior_mean
 
 
@@ -369,8 +371,8 @@ class GaussianDiffusion(nn.Module):
         model_output = model(x, t, False)
         model_variance = self.posterior_variance
         model_log_variance = self.posterior_log_variance_clipped
-        model_variance = self._extract_into_tensor(model_variance, t, x.shape)
-        model_log_variance = self._extract_into_tensor(model_log_variance, t, x.shape)
+        model_variance = self._extract_into_tensor(model_variance, t, x.shape, x.device)
+        model_log_variance = self._extract_into_tensor(model_log_variance, t, x.shape, x.device)
         model_mean = self.q_posterior_mean_variance(x_start=model_output, x_t=x, t=t)
         return {
             "mean": model_mean,
@@ -378,13 +380,13 @@ class GaussianDiffusion(nn.Module):
         }
 
 
-    def SNR(self, t):
-        self.alphas_cumprod = self.alphas_cumprod.cuda()
+    def SNR(self, t, device="cuda"):
+        self.alphas_cumprod = self.alphas_cumprod.to(device)
         return self.alphas_cumprod[t] / (1 - self.alphas_cumprod[t])
 
 
-    def _extract_into_tensor(self, arr, timesteps, broadcast_shape):
-        arr = arr.cuda()
+    def _extract_into_tensor(self, arr, timesteps, broadcast_shape, device="cuda"):
+        arr = arr.to(device)
         res = arr[timesteps].float()
         while len(res.shape) < len(broadcast_shape):
             res = res[..., None]
