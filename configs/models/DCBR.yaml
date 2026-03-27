@@ -115,7 +115,7 @@ Youshu:
   tau: 0.08
   lambda_1: 0.3
   lambda_2: 1.0e-6
-  epochs: 50
+  epochs: 110
 
 
 NetEase:
