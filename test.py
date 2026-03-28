@@ -28,7 +28,7 @@ def quick_test(model, pretrained, test_loader, conf):
     for users, ground_truth_u_b, train_mask_u_b in test_loader:
         pred_b = model.evaluate(rs, users.to(conf["device"]))
         pred_b -= 1e8 * train_mask_u_b.to(conf["device"])
-        tmp_metrics = get_metrics(tmp_metrics, ground_truth_u_b, pred_b, conf["topk"])
+        tmp_metrics = get_metrics(tmp_metrics, ground_truth_u_b.to(conf["device"]), pred_b, conf["topk"])
 
     metrics = {}
     for m, topk_res in tmp_metrics.items():
@@ -51,7 +51,7 @@ def test(model, test_loader, conf):
     for users, ground_truth_u_b, train_mask_u_b in test_loader:
         pred_b = model.evaluate(rs, users.to(conf["device"]))
         pred_b -= 1e8 * train_mask_u_b.to(conf["device"])
-        tmp_metrics = get_metrics(tmp_metrics, ground_truth_u_b, pred_b, conf["topk"])
+        tmp_metrics = get_metrics(tmp_metrics, ground_truth_u_b.to(conf["device"]), pred_b, conf["topk"])
 
     metrics = {}
     for m, topk_res in tmp_metrics.items():
