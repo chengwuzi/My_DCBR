@@ -64,23 +64,23 @@ class DCBR(nn.Module):
 
     def get_propagation_graph(self, bipartite_graph):
         propagation_graph = sp.bmat([[sp.csr_matrix((bipartite_graph.shape[0], bipartite_graph.shape[0])), bipartite_graph], [bipartite_graph.T, sp.csr_matrix((bipartite_graph.shape[1], bipartite_graph.shape[1]))]])
-        rowsum_sqrt = sp.diags(1/(np.sqrt(propagation_graph.sum(axis=1).A.ravel()) + 1e-8))
-        colsum_sqrt = sp.diags(1/(np.sqrt(propagation_graph.sum(axis=0).A.ravel()) + 1e-8))
+        rowsum_sqrt = sp.diags(1/(np.sqrt(np.asarray(propagation_graph.sum(axis=1)).ravel()) + 1e-8))
+        colsum_sqrt = sp.diags(1/(np.sqrt(np.asarray(propagation_graph.sum(axis=0)).ravel()) + 1e-8))
         propagation_graph = rowsum_sqrt @ propagation_graph @ colsum_sqrt
         propagation_graph = propagation_graph.tocoo()
         values = propagation_graph.data
         indices = np.vstack((propagation_graph.row, propagation_graph.col))
-        propagation_graph = torch.sparse.FloatTensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(propagation_graph.shape)).to(self.device)
+        propagation_graph = torch.sparse_coo_tensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(propagation_graph.shape)).to(self.device)
         return propagation_graph
 
 
     def get_aggregation_graph(self, bipartite_graph):
         bundle_size = bipartite_graph.sum(axis=1) + 1e-8
-        bipartite_graph = sp.diags(1/bundle_size.A.ravel()) @ bipartite_graph
+        bipartite_graph = sp.diags(1/np.asarray(bundle_size).ravel()) @ bipartite_graph
         bipartite_graph = bipartite_graph.tocoo()
         values = bipartite_graph.data
         indices = np.vstack((bipartite_graph.row, bipartite_graph.col))
-        bipartite_graph = torch.sparse.FloatTensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(bipartite_graph.shape)).to(self.device)
+        bipartite_graph = torch.sparse_coo_tensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(bipartite_graph.shape)).to(self.device)
         return bipartite_graph
 
 
