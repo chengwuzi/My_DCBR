@@ -109,10 +109,13 @@ def main():
     diffusion_model = None
     cbdm_optimizer = None
     static_ub_propagation_graph = None
+    use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
     if use_weight_matrix_rebuild:
         static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_ub_graph, conf, device)
         write_log("Use weight matrix rebuild: skip CBDM training and rebuild UB graph from weight matrix top-k.", log_path)
     else:
+        if use_observed_ub_rebuild_mask:
+            write_log("Use observed-only CBDM rebuild: top-k is selected only from observed train U-B interactions.", log_path)
         # Conditional Bundle Diffusion Model (CBDM)
         out_dims = conf["dims"] + [conf["num_bundles"]]
         in_dims = out_dims[::-1]
@@ -161,11 +164,17 @@ def main():
                     batch_user_bundle, batch_user_index = batch
                     batch_user_bundle, batch_user_index = batch_user_bundle.to(device), batch_user_index.to(device)
                     denoised_batch = diffusion_model.p_sample(denoise_model, batch_user_bundle, conf["sampling_steps"], conf["sampling_noise"])
+                    if use_observed_ub_rebuild_mask:
+                        observed_mask = batch_user_bundle > 0
+                        denoised_batch = denoised_batch.masked_fill(~observed_mask, -1e8)
                     _, indices_ = torch.topk(denoised_batch, k=conf["rebuild_k"])
                     for i in range(batch_user_index.shape[0]):
                         for j in range(indices_[i].shape[0]): 
+                            bundle_idx = int(indices_[i][j].cpu().numpy())
+                            if use_observed_ub_rebuild_mask and batch_user_bundle[i, bundle_idx].item() <= 0:
+                                continue
                             u_list_ub.append(int(batch_user_index[i].cpu().numpy()))
-                            b_list_ub.append(int(indices_[i][j].cpu().numpy()))
+                            b_list_ub.append(bundle_idx)
                             edge_list_ub.append(1.0)
                 denoised_ub_mat = sp.coo_matrix(
                     (np.array(edge_list_ub), (np.array(u_list_ub), np.array(b_list_ub))),

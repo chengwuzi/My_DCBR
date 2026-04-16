@@ -1,5 +1,6 @@
 MealRec+H:
   use_weight_matrix_rebuild: False
+  use_observed_ub_rebuild_mask: False
   weight_matrix_path: ''
   dims: [1000]
   norm: False
@@ -32,6 +33,7 @@ MealRec+H:
 
 MealRec+L:
   use_weight_matrix_rebuild: False
+  use_observed_ub_rebuild_mask: False
   weight_matrix_path: ''
   dims: [1000]
   norm: False
@@ -64,6 +66,7 @@ MealRec+L:
 
 iFashion:
   use_weight_matrix_rebuild: False
+  use_observed_ub_rebuild_mask: False
   weight_matrix_path: './weightMatrix/iFashion_UB.txt'
   dims: [1000]
   norm: False
