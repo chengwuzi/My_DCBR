@@ -104,6 +104,10 @@ def main():
         raise ValueError(f"Unimplemented model {conf['model']}")
     optimizer = torch.optim.Adam(model.parameters(), lr=conf["lr"], weight_decay=0)
     use_weight_matrix_rebuild = conf.get("use_weight_matrix_rebuild", False)
+    use_weight_matrix_prune_bottomk = conf.get("use_weight_matrix_prune_bottomk", False)
+
+    if use_weight_matrix_rebuild and use_weight_matrix_prune_bottomk:
+        raise ValueError("use_weight_matrix_rebuild and use_weight_matrix_prune_bottomk cannot be enabled at the same time")
 
     denoise_model = None
     diffusion_model = None
@@ -111,7 +115,10 @@ def main():
     static_ub_propagation_graph = None
     use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
     use_weight_matrix_random_subset = conf.get("use_weight_matrix_random_subset", False)
-    if use_weight_matrix_rebuild:
+    if use_weight_matrix_prune_bottomk:
+        static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_pruned_ub_graph, conf, device)
+        write_log("Use weight matrix bottom-k pruning rebuild: skip CBDM training and drop the lowest-weight observed U-B edges per user.", log_path)
+    elif use_weight_matrix_rebuild:
         if use_weight_matrix_random_subset:
             write_log("Use weight matrix rebuild with epoch-wise random subset sampling from weight matrix top-k candidates.", log_path)
         else:
@@ -134,7 +141,9 @@ def main():
     best_epoch = 0
     best_content = None
     for epoch in range(conf['epochs']):
-        if use_weight_matrix_rebuild:
+        if use_weight_matrix_prune_bottomk:
+            UB_propagation_graph = static_ub_propagation_graph
+        elif use_weight_matrix_rebuild:
             if use_weight_matrix_random_subset:
                 sampled_weight_matrix_ub_graph = dataset.build_weight_matrix_ub_graph(log_stats=(epoch == 0))
                 UB_propagation_graph = build_ub_propagation_graph(sampled_weight_matrix_ub_graph, conf, device)

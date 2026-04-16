@@ -1,5 +1,7 @@
 MealRec+H:
   use_weight_matrix_rebuild: False
+  use_weight_matrix_prune_bottomk: False
+  weight_matrix_prune_k: 0
   use_observed_ub_rebuild_mask: False
   use_weight_matrix_random_subset: False
   weight_matrix_random_subset_min_k: 2
@@ -36,6 +38,8 @@ MealRec+H:
 
 MealRec+L:
   use_weight_matrix_rebuild: False
+  use_weight_matrix_prune_bottomk: False
+  weight_matrix_prune_k: 0
   use_observed_ub_rebuild_mask: False
   use_weight_matrix_random_subset: False
   weight_matrix_random_subset_min_k: 2
@@ -72,6 +76,8 @@ MealRec+L:
 
 iFashion:
   use_weight_matrix_rebuild: False
+  use_weight_matrix_prune_bottomk: False
+  weight_matrix_prune_k: 0
   use_observed_ub_rebuild_mask: False
   use_weight_matrix_random_subset: False
   weight_matrix_random_subset_min_k: 2

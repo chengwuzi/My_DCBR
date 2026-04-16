@@ -104,11 +104,17 @@ class Datasets():
 
         self.graphs = [u_b_graph_train, u_i_graph, b_i_graph]
         self.weight_matrix_ub_graph = None
+        self.weight_matrix_pruned_ub_graph = None
+        self.weight_matrix_user_edges = None
         self.weight_matrix_topk_candidates = None
+        if conf.get("use_weight_matrix_rebuild", False) or conf.get("use_weight_matrix_prune_bottomk", False):
+            self.weight_matrix_user_edges = self.get_weight_matrix_user_edges()
         if conf.get("use_weight_matrix_rebuild", False):
             self.weight_matrix_topk_candidates = self.get_weight_matrix_topk_candidates()
             if not conf.get("use_weight_matrix_random_subset", False):
                 self.weight_matrix_ub_graph = self.build_weight_matrix_ub_graph()
+        if conf.get("use_weight_matrix_prune_bottomk", False):
+            self.weight_matrix_pruned_ub_graph = self.build_weight_matrix_pruned_ub_graph()
 
         self.train_loader = DataLoader(self.bundle_train_data, batch_size=batch_size_train, shuffle=True, num_workers=10, drop_last=True)
         self.val_loader = DataLoader(self.bundle_val_data, batch_size=batch_size_test, shuffle=False, num_workers=20)
@@ -165,13 +171,10 @@ class Datasets():
         return u_b_pairs, u_b_graph
 
 
-    def get_weight_matrix_topk_candidates(self):
+    def get_weight_matrix_user_edges(self):
         weight_matrix_path = self.conf.get("weight_matrix_path")
-        rebuild_k = self.conf["rebuild_k"]
         if not weight_matrix_path:
-            raise ValueError("weight_matrix_path must be provided when use_weight_matrix_rebuild is enabled")
-        if rebuild_k <= 0:
-            raise ValueError("rebuild_k must be positive when use_weight_matrix_rebuild is enabled")
+            raise ValueError("weight_matrix_path must be provided when weight matrix logic is enabled")
 
         user_edges = [[] for _ in range(self.num_users)]
         with open(weight_matrix_path, "r", encoding="utf-8") as f:
@@ -194,7 +197,23 @@ class Datasets():
                 continue
             # Keep ties deterministic by relying on Python's stable sort.
             edges.sort(key=lambda x: x[0], reverse=True)
-            user_edges[user_id] = edges[:rebuild_k]
+
+        if not any(user_edges):
+            raise ValueError("weight matrix file produced an empty candidate pool")
+
+        return user_edges
+
+
+    def get_weight_matrix_topk_candidates(self):
+        rebuild_k = self.conf["rebuild_k"]
+        if rebuild_k <= 0:
+            raise ValueError("rebuild_k must be positive when use_weight_matrix_rebuild is enabled")
+        if self.weight_matrix_user_edges is None:
+            raise ValueError("weight matrix user edges are not initialized")
+
+        user_edges = []
+        for edges in self.weight_matrix_user_edges:
+            user_edges.append(edges[:rebuild_k])
 
         if not any(user_edges):
             raise ValueError("weight matrix rebuild produced an empty candidate pool")
@@ -250,6 +269,44 @@ class Datasets():
                 stats_label += ' (random subset)'
             print_statistics(weight_matrix_ub_graph, stats_label, self.conf["log_path"])
         return weight_matrix_ub_graph
+
+
+    def build_weight_matrix_pruned_ub_graph(self, log_stats=True):
+        if self.weight_matrix_user_edges is None:
+            raise ValueError("weight matrix user edges are not initialized")
+
+        prune_k = self.conf.get("weight_matrix_prune_k", 0)
+        if prune_k < 0:
+            raise ValueError("weight_matrix_prune_k must be non-negative")
+
+        u_list = []
+        b_list = []
+        edge_list = []
+        for user_id, edges in enumerate(self.weight_matrix_user_edges):
+            if not edges:
+                continue
+
+            keep_num = len(edges) - prune_k
+            if keep_num <= 0:
+                keep_num = 1
+            selected_edges = edges[:keep_num]
+
+            for _, bundle_id in selected_edges:
+                u_list.append(user_id)
+                b_list.append(bundle_id)
+                edge_list.append(1.0)
+
+        if not edge_list:
+            raise ValueError("weight matrix bottom-k pruning produced an empty UB graph")
+
+        pruned_ub_graph = sp.coo_matrix(
+            (np.array(edge_list, dtype=np.float32), (np.array(u_list, dtype=np.int32), np.array(b_list, dtype=np.int32))),
+            shape=(self.num_users, self.num_bundles),
+        ).tocsr()
+
+        if log_stats:
+            print_statistics(pruned_ub_graph, 'U-B statistics from weight matrix bottom-k pruning', self.conf["log_path"])
+        return pruned_ub_graph
 
 
 class DiffusionDataset(Dataset):
