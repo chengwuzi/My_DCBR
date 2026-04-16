@@ -33,6 +33,26 @@ def get_cmd():
     return args
 
 
+def build_ub_propagation_graph(ub_graph, conf, device):
+    adjacency_matrix = sp.bmat([
+        [sp.csr_matrix((conf["num_users"], conf["num_users"])), ub_graph],
+        [ub_graph.T, sp.csr_matrix((conf["num_bundles"], conf["num_bundles"]))],
+    ])
+    adjacency_matrix = adjacency_matrix + sp.eye(adjacency_matrix.shape[0])
+    row_sum = np.array(adjacency_matrix.sum(axis=1))
+    d_inv = np.power(row_sum, -0.5).flatten()
+    d_inv[np.isinf(d_inv)] = 0.0
+    degree_matrix = sp.diags(d_inv)
+    norm_adjacency = degree_matrix.dot(adjacency_matrix).dot(degree_matrix).tocoo()
+    values = norm_adjacency.data
+    indices = np.vstack((norm_adjacency.row, norm_adjacency.col))
+    return torch.sparse_coo_tensor(
+        torch.LongTensor(indices),
+        torch.FloatTensor(values),
+        torch.Size(norm_adjacency.shape),
+    ).to(device)
+
+
 def main():
     paras = get_cmd().__dict__
     set_seed(paras["seed"])
@@ -83,13 +103,22 @@ def main():
     else:
         raise ValueError(f"Unimplemented model {conf['model']}")
     optimizer = torch.optim.Adam(model.parameters(), lr=conf["lr"], weight_decay=0)
-    
-    # Conditional Bundle Diffusion Model (CBDM)
-    out_dims = conf["dims"] + [conf["num_bundles"]]
-    in_dims = out_dims[::-1]
-    denoise_model = DNN(in_dims, out_dims, conf["time_emb_dim"], norm=conf["norm"]).to(device)
-    diffusion_model = GaussianDiffusion(conf["noise_scale"], conf["noise_min"], conf["noise_max"], conf["steps"]).to(device)
-    cbdm_optimizer = torch.optim.Adam(denoise_model.parameters(), lr=conf["lr"], weight_decay=0)
+    use_weight_matrix_rebuild = conf.get("use_weight_matrix_rebuild", False)
+
+    denoise_model = None
+    diffusion_model = None
+    cbdm_optimizer = None
+    static_ub_propagation_graph = None
+    if use_weight_matrix_rebuild:
+        static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_ub_graph, conf, device)
+        write_log("Use weight matrix rebuild: skip CBDM training and rebuild UB graph from weight matrix top-k.", log_path)
+    else:
+        # Conditional Bundle Diffusion Model (CBDM)
+        out_dims = conf["dims"] + [conf["num_bundles"]]
+        in_dims = out_dims[::-1]
+        denoise_model = DNN(in_dims, out_dims, conf["time_emb_dim"], norm=conf["norm"]).to(device)
+        diffusion_model = GaussianDiffusion(conf["noise_scale"], conf["noise_min"], conf["noise_max"], conf["steps"]).to(device)
+        cbdm_optimizer = torch.optim.Adam(denoise_model.parameters(), lr=conf["lr"], weight_decay=0)
 
     batch_cnt = len(dataset.train_loader)
     test_interval_bs = int(batch_cnt * conf["test_interval"])
@@ -98,59 +127,54 @@ def main():
     best_epoch = 0
     best_content = None
     for epoch in range(conf['epochs']):
-        ######### Denoising Uer-Bundle Graph ###########
-        diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].toarray()))
-        diffusionLoader = torch.utils.data.DataLoader(diffusionDataset, batch_size=conf["batch_size_train"], shuffle=True, num_workers=0)
-        total_steps = (diffusionDataset.__len__() + conf["batch_size_train"] - 1) // conf["batch_size_train"]
-        pbar_diffusion = tqdm(enumerate(diffusionLoader), total=total_steps)
-        for i, batch in pbar_diffusion:
-            batch_user_bundle, batch_user_index = batch
-            batch_user_bundle, batch_user_index = batch_user_bundle.to(device), batch_user_index.to(device)
-            uEmbeds = model.getUserEmbeds().detach()
-            bEmbeds = model.getBundleEmbeds().detach()
-            
-            cbdm_optimizer.zero_grad()
-            elbo_loss, blcc_loss = diffusion_model.training_CBDM_losses(denoise_model, batch_user_bundle, uEmbeds, bEmbeds, batch_user_index)
-            blcc_loss *= conf["lambda_0"]
-            loss = elbo_loss + blcc_loss
-            loss.backward()
-            cbdm_optimizer.step()
-            
-            loss_scalar = loss.detach()
-            elbo_loss_scalar = elbo_loss.detach()
-            blcc_loss_scalar = blcc_loss.detach()
-            pbar_diffusion.set_description(f'Diffusion Step: {i+1}/{total_steps} | loss: {loss_scalar:8.4f} | elbo_loss: {elbo_loss_scalar:8.4f} | blcc_loss: {blcc_loss_scalar:8.4f}')
-
-        with torch.no_grad():
-            u_list_ub = []
-            b_list_ub = []
-            edge_list_ub = []
-            for _, batch in enumerate(diffusionLoader):
+        if use_weight_matrix_rebuild:
+            UB_propagation_graph = static_ub_propagation_graph
+        else:
+            ######### Denoising Uer-Bundle Graph ###########
+            diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].toarray()))
+            diffusionLoader = torch.utils.data.DataLoader(diffusionDataset, batch_size=conf["batch_size_train"], shuffle=True, num_workers=0)
+            total_steps = (diffusionDataset.__len__() + conf["batch_size_train"] - 1) // conf["batch_size_train"]
+            pbar_diffusion = tqdm(enumerate(diffusionLoader), total=total_steps)
+            for i, batch in pbar_diffusion:
                 batch_user_bundle, batch_user_index = batch
                 batch_user_bundle, batch_user_index = batch_user_bundle.to(device), batch_user_index.to(device)
-                denoised_batch = diffusion_model.p_sample(denoise_model, batch_user_bundle, conf["sampling_steps"], conf["sampling_noise"])
-                _, indices_ = torch.topk(denoised_batch, k=conf["rebuild_k"])
-                for i in range(batch_user_index.shape[0]):
-                    for j in range(indices_[i].shape[0]): 
-                        u_list_ub.append(int(batch_user_index[i].cpu().numpy()))
-                        b_list_ub.append(int(indices_[i][j].cpu().numpy()))
-                        edge_list_ub.append(1.0)
-            u_list_ub = np.array(u_list_ub)
-            b_list_ub = np.array(b_list_ub)
-            edge_list_ub = np.array(edge_list_ub)
-            denoised_ub_mat = sp.coo_matrix((edge_list_ub, (u_list_ub, b_list_ub)), shape=(conf["num_users"], conf["num_bundles"]), dtype=np.float32)
-            adjacency_matrix = sp.bmat([[sp.csr_matrix((conf["num_users"], conf["num_users"])), denoised_ub_mat], [denoised_ub_mat.T, sp.csr_matrix((conf["num_bundles"], conf["num_bundles"]))]])
-            adjacency_matrix = adjacency_matrix + sp.eye(adjacency_matrix.shape[0])
-            row_sum = np.array(adjacency_matrix.sum(axis=1))
-            d_inv = np.power(row_sum, -0.5).flatten()
-            d_inv[np.isinf(d_inv)] = 0.
-            degree_matrix = sp.diags(d_inv)
-            norm_adjacency = degree_matrix.dot(adjacency_matrix).dot(degree_matrix).tocoo()
-            values = norm_adjacency.data
-            indices = np.vstack((norm_adjacency.row, norm_adjacency.col))
-            UB_propagation_graph = torch.sparse_coo_tensor(torch.LongTensor(indices), torch.FloatTensor(values), torch.Size(norm_adjacency.shape)).to(device)
-            
-        ################################################
+                uEmbeds = model.getUserEmbeds().detach()
+                bEmbeds = model.getBundleEmbeds().detach()
+                
+                cbdm_optimizer.zero_grad()
+                elbo_loss, blcc_loss = diffusion_model.training_CBDM_losses(denoise_model, batch_user_bundle, uEmbeds, bEmbeds, batch_user_index)
+                blcc_loss *= conf["lambda_0"]
+                loss = elbo_loss + blcc_loss
+                loss.backward()
+                cbdm_optimizer.step()
+                
+                loss_scalar = loss.detach()
+                elbo_loss_scalar = elbo_loss.detach()
+                blcc_loss_scalar = blcc_loss.detach()
+                pbar_diffusion.set_description(f'Diffusion Step: {i+1}/{total_steps} | loss: {loss_scalar:8.4f} | elbo_loss: {elbo_loss_scalar:8.4f} | blcc_loss: {blcc_loss_scalar:8.4f}')
+
+            with torch.no_grad():
+                u_list_ub = []
+                b_list_ub = []
+                edge_list_ub = []
+                for _, batch in enumerate(diffusionLoader):
+                    batch_user_bundle, batch_user_index = batch
+                    batch_user_bundle, batch_user_index = batch_user_bundle.to(device), batch_user_index.to(device)
+                    denoised_batch = diffusion_model.p_sample(denoise_model, batch_user_bundle, conf["sampling_steps"], conf["sampling_noise"])
+                    _, indices_ = torch.topk(denoised_batch, k=conf["rebuild_k"])
+                    for i in range(batch_user_index.shape[0]):
+                        for j in range(indices_[i].shape[0]): 
+                            u_list_ub.append(int(batch_user_index[i].cpu().numpy()))
+                            b_list_ub.append(int(indices_[i][j].cpu().numpy()))
+                            edge_list_ub.append(1.0)
+                denoised_ub_mat = sp.coo_matrix(
+                    (np.array(edge_list_ub), (np.array(u_list_ub), np.array(b_list_ub))),
+                    shape=(conf["num_users"], conf["num_bundles"]),
+                    dtype=np.float32,
+                )
+                UB_propagation_graph = build_ub_propagation_graph(denoised_ub_mat, conf, device)
+                
+            ################################################
 
         epoch_anchor = epoch * batch_cnt
         pbar = tqdm(enumerate(dataset.train_loader), total=len(dataset.train_loader))

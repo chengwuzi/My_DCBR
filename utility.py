@@ -103,6 +103,9 @@ class Datasets():
         self.bundle_test_data = BundleTestDataset(u_b_pairs_test, u_b_graph_test, u_b_graph_train, self.num_users, self.num_bundles)
 
         self.graphs = [u_b_graph_train, u_i_graph, b_i_graph]
+        self.weight_matrix_ub_graph = None
+        if conf.get("use_weight_matrix_rebuild", False):
+            self.weight_matrix_ub_graph = self.get_weight_matrix_ub()
 
         self.train_loader = DataLoader(self.bundle_train_data, batch_size=batch_size_train, shuffle=True, num_workers=10, drop_last=True)
         self.val_loader = DataLoader(self.bundle_val_data, batch_size=batch_size_test, shuffle=False, num_workers=20)
@@ -157,6 +160,55 @@ class Datasets():
         print_statistics(u_b_graph, f"U-B statistics in {task}", self.conf["log_path"])
 
         return u_b_pairs, u_b_graph
+
+
+    def get_weight_matrix_ub(self):
+        weight_matrix_path = self.conf.get("weight_matrix_path")
+        rebuild_k = self.conf["rebuild_k"]
+        if not weight_matrix_path:
+            raise ValueError("weight_matrix_path must be provided when use_weight_matrix_rebuild is enabled")
+        if rebuild_k <= 0:
+            raise ValueError("rebuild_k must be positive when use_weight_matrix_rebuild is enabled")
+
+        user_edges = [[] for _ in range(self.num_users)]
+        with open(weight_matrix_path, "r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                user_id, bundle_id, weight = line.split()
+                user_id = int(user_id)
+                bundle_id = int(bundle_id)
+                weight = float(weight)
+                if user_id < 0 or user_id >= self.num_users:
+                    raise ValueError(f"user_id {user_id} at line {line_idx} is out of range")
+                if bundle_id < 0 or bundle_id >= self.num_bundles:
+                    raise ValueError(f"bundle_id {bundle_id} at line {line_idx} is out of range")
+                user_edges[user_id].append((weight, bundle_id))
+
+        u_list = []
+        b_list = []
+        edge_list = []
+        for user_id, edges in enumerate(user_edges):
+            if not edges:
+                continue
+            # Keep ties deterministic by relying on Python's stable sort.
+            edges.sort(key=lambda x: x[0], reverse=True)
+            for _, bundle_id in edges[:rebuild_k]:
+                u_list.append(user_id)
+                b_list.append(bundle_id)
+                edge_list.append(1.0)
+
+        if not edge_list:
+            raise ValueError("weight matrix rebuild produced an empty UB graph")
+
+        weight_matrix_ub_graph = sp.coo_matrix(
+            (np.array(edge_list, dtype=np.float32), (np.array(u_list, dtype=np.int32), np.array(b_list, dtype=np.int32))),
+            shape=(self.num_users, self.num_bundles),
+        ).tocsr()
+
+        print_statistics(weight_matrix_ub_graph, 'U-B statistics from weight matrix rebuild', self.conf["log_path"])
+        return weight_matrix_ub_graph
 
 
 class DiffusionDataset(Dataset):

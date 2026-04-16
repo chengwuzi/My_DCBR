@@ -1,4 +1,6 @@
 MealRec+H:
+  use_weight_matrix_rebuild: False
+  weight_matrix_path: ''
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -29,6 +31,8 @@ MealRec+H:
 
 
 MealRec+L:
+  use_weight_matrix_rebuild: False
+  weight_matrix_path: ''
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -59,6 +63,8 @@ MealRec+L:
 
 
 iFashion:
+  use_weight_matrix_rebuild: False
+  weight_matrix_path: './weightMatrix/iFashion_UB.txt'
   dims: [1000]
   norm: False
   time_emb_dim: 10
