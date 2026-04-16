@@ -1,0 +1,286 @@
+UB权重矩阵交接说明
+====================
+
+一、这份说明文档是做什么的
+--------------------------
+
+这份文档用于给后续在 MultiCBR 项目中使用 BOD 导出的 UB 权重矩阵的人做交接说明。
+
+目标是回答下面这些问题：
+
+1. 这个“权重矩阵”到底是什么
+2. 它是怎么训练出来的
+3. 它对应哪一部分数据
+4. 文件格式是什么
+5. 在 MultiCBR 里应该如何理解和使用
+6. 有哪些注意事项和边界条件
+
+
+二、最核心的一句话定义
+----------------------
+
+当前导出的 UB 权重矩阵，本质上不是一个已经展开成 dense 形式的二维矩阵文件，
+而是一份“训练集 user-bundle 边权重表（edge list）”。
+
+文件中每一行表示一条训练集中的 user-bundle 交互边：
+
+    user_id bundle_id weight
+
+其中：
+
+- user_id：用户ID
+- bundle_id：bundleID
+- weight：BOD 中 generator 对该 user-bundle 交互边给出的权重分数
+
+
+三、这份权重来自哪套训练配置
+----------------------------
+
+当前这份权重矩阵来自 BOD 模型在 iFashion_UB 数据集上的训练结果。
+
+关键点如下：
+
+- 数据集：iFashion_UB
+- 训练边文件：dataset/iFashion_UB/train.txt
+- 测试边文件：dataset/iFashion_UB/test.txt
+- backbone：LightGCN
+- 导出来源：BOD 训练结束后，恢复 best epoch 的 user/bundle 表示与 generator，再导出训练集边权重
+- 当前 weight.mode：per_sample
+
+这里尤其要注意：
+
+- 本次导出的权重不是 original 广播逻辑下的权重
+- 而是 per_sample 模式下的权重
+- per_sample 的含义是：generator 输出的 [batch, 1] 权重会先压成 [batch]，再做真正逐样本加权
+
+因此，这份权重在语义上更接近“每一条 user-bundle 交互边自己的权重”。
+
+
+四、BOD 是如何学出这个权重的
+----------------------------
+
+可以把 BOD 理解为双层训练：
+
+1. 内层：训练 recommender backbone（当前是 LightGCN）
+2. 外层：训练 generator，让 generator 给每条交互边输出一个权重
+
+更具体地说：
+
+- backbone 学的是 user embedding 和 bundle embedding
+- generator 的输入是某个 user embedding 和某个 bundle embedding 的拼接表示
+- generator 的输出是一个标量权重
+- 这个权重通过带权 BPR、带权 alignment 以及 outer-loop 梯度匹配机制参与训练
+
+当前 generator 的最后一层用了 sigmoid，因此理论上导出的权重会落在 0 到 1 之间。
+
+
+五、这份文件对应的是哪部分边
+----------------------------
+
+这份文件只对应训练集中的 user-bundle 边，不对应：
+
+- test.txt 里的边
+- 未观测到的 user-bundle 组合
+- 所有 user x bundle 的完整笛卡尔积
+
+也就是说，这不是“全矩阵”，而是“训练边子集上的边权重表”。
+
+对于当前 iFashion_UB 数据：
+
+- train.txt 边数：1213676
+- 唯一 user-bundle 对数：1213676
+
+也就是说，当前训练文件本身没有重复边。
+
+因此，正常情况下，导出的权重文件也应当有 1213676 行。
+
+
+六、导出时到底用的是哪个 epoch 的状态
+------------------------------------
+
+不是最后一个 epoch，而是 best epoch。
+
+当前 BOD 的逻辑是：
+
+1. 每个 epoch 的 inner loop 结束后做一次评估
+2. 如果当前指标优于历史 best，则保存：
+   - best_user_emb
+   - best_item_emb
+   - best_generator_state
+3. 训练全部结束后：
+   - 先恢复 best_user_emb 和 best_item_emb
+   - 再恢复 best_generator_state
+   - 最后用这套 best 状态导出训练集 UB 权重
+
+因此，这份权重文件的含义是：
+
+“best epoch 时刻，generator 在 best user/bundle 表示空间上，对训练集每条 UB 边打出的权重分数。”
+
+
+七、权重文件格式说明
+--------------------
+
+导出文件是纯文本文件，每行三列，用空格分隔：
+
+    user_id bundle_id weight
+
+示例：
+
+    0 16092 0.537421
+    0 14730 0.493288
+    0 2102 0.581903
+
+说明：
+
+- 第1列是 user 原始ID
+- 第2列是 bundle 原始ID
+- 第3列是对应的权重分数
+
+这不是 index-based dense matrix，也不是 numpy 二进制文件。
+
+
+八、行顺序是否重要
+------------------
+
+重要。
+
+当前代码已经特别处理过，保证导出文件中的边顺序与原始 train.txt 的顺序一致。
+
+这意味着：
+
+- 如果 MultiCBR 那边是逐行读取 train.txt，再逐行对齐这份权重文件，也应该能对上
+- 如果按 (user_id, bundle_id) 键做匹配，也同样没问题
+
+不过更稳妥的建议仍然是：
+
+- 优先按 (user_id, bundle_id) 这对键做显式对齐
+- 不要完全依赖“默认第 N 行一定对应第 N 行”这种隐式约定
+
+虽然当前实现已经保证顺序一致，但显式键对齐更稳、更不容易埋坑。
+
+
+九、这份权重应该如何理解
+------------------------
+
+这份权重可以理解为：
+
+“在当前 BOD 训练机制下，generator 认为每条训练集 user-bundle 交互边的重要程度/可信度/作用强度。”
+
+但要注意，它不是下面这些东西：
+
+- 不是显式评分
+- 不是点击概率
+- 不是购买概率
+- 不是归一化后的用户分布
+- 不是 bundle 流行度
+
+更合理的理解是：
+
+- 它是一个 learned edge weight
+- 反映 generator 对该交互边在训练中的相对加权倾向
+
+因此，在 MultiCBR 里更适合把它当成：
+
+- 边权重
+- 置信度权重
+- 重加权信号
+
+而不应直接把它解释成“概率”。
+
+
+十、为什么这份权重更值得关注
+----------------------------
+
+这次导出用的是 per_sample 模式，而不是 original 模式。
+
+这件事的意义在于：
+
+- original 模式下，带权损失里存在历史广播实现行为
+- per_sample 模式下，权重会先压成一维，再做真正逐样本加权
+
+因此，当前这份权重在语义上更接近我们想要验证的东西：
+
+“generator 是否真的给每一条 user-bundle 交互边学到了一个独立的边权重。”
+
+换句话说，如果后续要在 MultiCBR 中利用这份权重，
+那么这份 per_sample 模式下的权重，比 original 模式下的权重更适合做“样本级边权重”解释。
+
+
+十一、MultiCBR 那边使用时的建议
+------------------------------
+
+建议按下面思路使用：
+
+1. 先确认 MultiCBR 当前使用的 UB 边文件，与这里导出权重时所基于的 train.txt 是同一份数据语义
+2. 用 (user_id, bundle_id) 键将权重表 join 到 MultiCBR 需要的 UB 交互边上
+3. 将第3列 weight 作为该边的额外权重信号使用
+
+推荐的使用方式包括但不限于：
+
+- 作为 loss reweighting 系数
+- 作为图边权重
+- 作为采样偏置或重要性系数
+
+不推荐直接做的事情：
+
+- 不加分析地把它当概率解释
+- 不做对齐检查就直接逐行硬拼
+- 对于训练集中不存在的 user-bundle 对，强行假设一个现成权重
+
+因为当前导出文件只覆盖训练集中出现过的边。
+
+
+十二、如果 MultiCBR 需要“完整矩阵”怎么办
+--------------------------------------
+
+当前导出文件不是完整 dense 矩阵。
+
+如果 MultiCBR 后续确实需要一个 user x bundle 的完整矩阵，那么需要在使用侧自行转换：
+
+1. 先建立 user_id 到行索引的映射
+2. 再建立 bundle_id 到列索引的映射
+3. 将 edge list 中的三元组散射到矩阵中
+
+对于没有出现在训练集中的 user-bundle 对：
+
+- 可以置 0
+- 可以置 1
+- 可以置某个默认常数
+- 或者只在 observed edge 上使用稀疏权重
+
+这个默认策略不属于当前 BOD 导出逻辑的一部分，
+需要由 MultiCBR 侧根据具体实验目标来决定。
+
+
+十三、代码层面的来源位置
+------------------------
+
+如果后续需要回溯代码，可以重点看这些位置：
+
+- BOD 主类：model/graph/BOD.py
+- 训练主循环：BOD.train()
+- best 状态保存：BOD.save()
+- best generator 恢复：BOD._restore_best_generator()
+- UB 权重导出：BOD.export_training_ub_weights()
+- 带权损失：core_runtime.py 中的
+  - bpr_loss_weight
+  - alignment_loss_weight_1
+- 当前配置：conf/BOD.conf
+
+
+十四、当前需要记住的边界条件
+--------------------------
+
+1. 这份文件对应的是训练边，不是全矩阵
+2. 这份文件来源于 best epoch，而不是最后一个 epoch
+3. 这份文件来自 per_sample 模式
+4. 权重范围通常在 0 到 1 之间，因为 generator 末层是 sigmoid
+5. 这份文件的推荐解释是“learned edge weight”，不是概率
+
+
+十五、给下一轮对话/下一个项目的最短交接版本
+----------------------------------------
+
+如果需要把最关键的信息一句话交接给后续对话，可以直接用下面这段：
+
+“当前放到 MultiCBR 项目中的 UB 权重矩阵，不是 dense 矩阵，而是 BOD 在 iFashion_UB 上导出的训练集 edge list 权重表；每行格式为 user_id bundle_id weight；它使用的是 best epoch 的 user/bundle embedding 和 best generator 状态生成；当前来源配置是 per_sample 模式，因此第三列 weight 可以理解为 generator 对每条训练集 user-bundle 边学到的逐样本边权重，适合在 MultiCBR 中作为 UB 边的附加权重信号使用。” 
