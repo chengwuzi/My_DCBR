@@ -104,8 +104,11 @@ class Datasets():
 
         self.graphs = [u_b_graph_train, u_i_graph, b_i_graph]
         self.weight_matrix_ub_graph = None
+        self.weight_matrix_topk_candidates = None
         if conf.get("use_weight_matrix_rebuild", False):
-            self.weight_matrix_ub_graph = self.get_weight_matrix_ub()
+            self.weight_matrix_topk_candidates = self.get_weight_matrix_topk_candidates()
+            if not conf.get("use_weight_matrix_random_subset", False):
+                self.weight_matrix_ub_graph = self.build_weight_matrix_ub_graph()
 
         self.train_loader = DataLoader(self.bundle_train_data, batch_size=batch_size_train, shuffle=True, num_workers=10, drop_last=True)
         self.val_loader = DataLoader(self.bundle_val_data, batch_size=batch_size_test, shuffle=False, num_workers=20)
@@ -162,7 +165,7 @@ class Datasets():
         return u_b_pairs, u_b_graph
 
 
-    def get_weight_matrix_ub(self):
+    def get_weight_matrix_topk_candidates(self):
         weight_matrix_path = self.conf.get("weight_matrix_path")
         rebuild_k = self.conf["rebuild_k"]
         if not weight_matrix_path:
@@ -186,15 +189,49 @@ class Datasets():
                     raise ValueError(f"bundle_id {bundle_id} at line {line_idx} is out of range")
                 user_edges[user_id].append((weight, bundle_id))
 
-        u_list = []
-        b_list = []
-        edge_list = []
         for user_id, edges in enumerate(user_edges):
             if not edges:
                 continue
             # Keep ties deterministic by relying on Python's stable sort.
             edges.sort(key=lambda x: x[0], reverse=True)
-            for _, bundle_id in edges[:rebuild_k]:
+            user_edges[user_id] = edges[:rebuild_k]
+
+        if not any(user_edges):
+            raise ValueError("weight matrix rebuild produced an empty candidate pool")
+
+        return user_edges
+
+
+    def build_weight_matrix_ub_graph(self, log_stats=True):
+        if self.weight_matrix_topk_candidates is None:
+            raise ValueError("weight matrix top-k candidates are not initialized")
+
+        random_subset_enabled = self.conf.get("use_weight_matrix_random_subset", False)
+        subset_min_k = self.conf.get("weight_matrix_random_subset_min_k", 2)
+        subset_max_k = self.conf.get("weight_matrix_random_subset_max_k", 3)
+        if subset_min_k <= 0 or subset_max_k <= 0:
+            raise ValueError("weight_matrix_random_subset_min_k and weight_matrix_random_subset_max_k must be positive")
+        if subset_min_k > subset_max_k:
+            raise ValueError("weight_matrix_random_subset_min_k cannot be greater than weight_matrix_random_subset_max_k")
+
+        u_list = []
+        b_list = []
+        edge_list = []
+        for user_id, edges in enumerate(self.weight_matrix_topk_candidates):
+            if not edges:
+                continue
+
+            selected_edges = edges
+            if random_subset_enabled:
+                max_selectable = min(subset_max_k, len(edges))
+                min_selectable = min(subset_min_k, len(edges))
+                if min_selectable > max_selectable:
+                    min_selectable = max_selectable
+                sample_size = np.random.randint(min_selectable, max_selectable + 1)
+                sampled_indices = np.random.choice(len(edges), size=sample_size, replace=False)
+                selected_edges = [edges[idx] for idx in sampled_indices]
+
+            for _, bundle_id in selected_edges:
                 u_list.append(user_id)
                 b_list.append(bundle_id)
                 edge_list.append(1.0)
@@ -207,7 +244,11 @@ class Datasets():
             shape=(self.num_users, self.num_bundles),
         ).tocsr()
 
-        print_statistics(weight_matrix_ub_graph, 'U-B statistics from weight matrix rebuild', self.conf["log_path"])
+        if log_stats:
+            stats_label = 'U-B statistics from weight matrix rebuild'
+            if random_subset_enabled:
+                stats_label += ' (random subset)'
+            print_statistics(weight_matrix_ub_graph, stats_label, self.conf["log_path"])
         return weight_matrix_ub_graph
 
 

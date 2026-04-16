@@ -110,9 +110,13 @@ def main():
     cbdm_optimizer = None
     static_ub_propagation_graph = None
     use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
+    use_weight_matrix_random_subset = conf.get("use_weight_matrix_random_subset", False)
     if use_weight_matrix_rebuild:
-        static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_ub_graph, conf, device)
-        write_log("Use weight matrix rebuild: skip CBDM training and rebuild UB graph from weight matrix top-k.", log_path)
+        if use_weight_matrix_random_subset:
+            write_log("Use weight matrix rebuild with epoch-wise random subset sampling from weight matrix top-k candidates.", log_path)
+        else:
+            static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_ub_graph, conf, device)
+            write_log("Use weight matrix rebuild: skip CBDM training and rebuild UB graph from weight matrix top-k.", log_path)
     else:
         if use_observed_ub_rebuild_mask:
             write_log("Use observed-only CBDM rebuild: top-k is selected only from observed train U-B interactions.", log_path)
@@ -131,7 +135,11 @@ def main():
     best_content = None
     for epoch in range(conf['epochs']):
         if use_weight_matrix_rebuild:
-            UB_propagation_graph = static_ub_propagation_graph
+            if use_weight_matrix_random_subset:
+                sampled_weight_matrix_ub_graph = dataset.build_weight_matrix_ub_graph(log_stats=(epoch == 0))
+                UB_propagation_graph = build_ub_propagation_graph(sampled_weight_matrix_ub_graph, conf, device)
+            else:
+                UB_propagation_graph = static_ub_propagation_graph
         else:
             ######### Denoising Uer-Bundle Graph ###########
             diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].toarray()))
