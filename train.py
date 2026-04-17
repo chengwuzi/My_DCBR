@@ -128,9 +128,21 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=conf["lr"], weight_decay=0)
     use_weight_matrix_rebuild = conf.get("use_weight_matrix_rebuild", False)
     use_weight_matrix_prune_bottomk = conf.get("use_weight_matrix_prune_bottomk", False)
+    use_weight_matrix_keep_bottomk_rebuild = conf.get("use_weight_matrix_keep_bottomk_rebuild", False)
 
-    if use_weight_matrix_rebuild and use_weight_matrix_prune_bottomk:
-        raise ValueError("use_weight_matrix_rebuild and use_weight_matrix_prune_bottomk cannot be enabled at the same time")
+    enabled_weight_matrix_branches = sum(
+        int(flag)
+        for flag in (
+            use_weight_matrix_rebuild,
+            use_weight_matrix_prune_bottomk,
+            use_weight_matrix_keep_bottomk_rebuild,
+        )
+    )
+    if enabled_weight_matrix_branches > 1:
+        raise ValueError(
+            "Only one weight-matrix main branch can be enabled at a time: "
+            "use_weight_matrix_rebuild, use_weight_matrix_prune_bottomk, use_weight_matrix_keep_bottomk_rebuild"
+        )
 
     denoise_model = None
     diffusion_model = None
@@ -140,9 +152,16 @@ def main():
     export_cbdm_analysis = conf.get("export_cbdm_analysis", False)
     use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
     use_weight_matrix_random_subset = conf.get("use_weight_matrix_random_subset", False)
+    use_weight_matrix_keep_bottomk_random_subset = conf.get("use_weight_matrix_keep_bottomk_random_subset", False)
     if use_weight_matrix_prune_bottomk:
         static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_pruned_ub_graph, conf, device)
         write_log("Use weight matrix bottom-k pruning rebuild: skip CBDM training and drop the lowest-weight observed U-B edges per user.", log_path)
+    elif use_weight_matrix_keep_bottomk_rebuild:
+        if use_weight_matrix_keep_bottomk_random_subset:
+            write_log("Use weight matrix keep-bottom-k rebuild with epoch-wise random subset sampling from the bottom-k candidates.", log_path)
+        else:
+            static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_bottomk_ub_graph, conf, device)
+            write_log("Use weight matrix keep-bottom-k rebuild: skip CBDM training and rebuild UB graph from the bottom-k observed U-B edges.", log_path)
     elif use_weight_matrix_rebuild:
         if use_weight_matrix_random_subset:
             write_log("Use weight matrix rebuild with epoch-wise random subset sampling from weight matrix top-k candidates.", log_path)
@@ -161,7 +180,7 @@ def main():
         denoise_model = DNN(in_dims, out_dims, conf["time_emb_dim"], norm=conf["norm"]).to(device)
         diffusion_model = GaussianDiffusion(conf["noise_scale"], conf["noise_min"], conf["noise_max"], conf["steps"]).to(device)
         cbdm_optimizer = torch.optim.Adam(denoise_model.parameters(), lr=conf["lr"], weight_decay=0)
-    if export_cbdm_analysis and (use_weight_matrix_rebuild or use_weight_matrix_prune_bottomk):
+    if export_cbdm_analysis and (use_weight_matrix_rebuild or use_weight_matrix_prune_bottomk or use_weight_matrix_keep_bottomk_rebuild):
         write_log("CBDM analysis export requested, but CBDM is skipped by the current weight-matrix branch. Export will be ignored.", log_path)
         export_cbdm_analysis = False
 
@@ -176,6 +195,12 @@ def main():
     for epoch in range(conf['epochs']):
         if use_weight_matrix_prune_bottomk:
             UB_propagation_graph = static_ub_propagation_graph
+        elif use_weight_matrix_keep_bottomk_rebuild:
+            if use_weight_matrix_keep_bottomk_random_subset:
+                sampled_weight_matrix_bottomk_ub_graph = dataset.build_weight_matrix_bottomk_ub_graph(log_stats=(epoch == 0))
+                UB_propagation_graph = build_ub_propagation_graph(sampled_weight_matrix_bottomk_ub_graph, conf, device)
+            else:
+                UB_propagation_graph = static_ub_propagation_graph
         elif use_weight_matrix_rebuild:
             if use_weight_matrix_random_subset:
                 sampled_weight_matrix_ub_graph = dataset.build_weight_matrix_ub_graph(log_stats=(epoch == 0))

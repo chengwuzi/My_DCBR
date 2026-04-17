@@ -25,6 +25,14 @@ MealRec+H:
   weight_matrix_random_subset_min_k: 2
   weight_matrix_random_subset_max_k: 3
 
+  # Weight-matrix keep-bottom-k rebuild
+  # Keeps the lowest-weight observed U-B edges, with optional epoch-wise random subset sampling.
+  use_weight_matrix_keep_bottomk_rebuild: False
+  weight_matrix_keep_bottomk_k: 0
+  use_weight_matrix_keep_bottomk_random_subset: False
+  weight_matrix_keep_bottomk_random_subset_min_k: 2
+  weight_matrix_keep_bottomk_random_subset_max_k: 3
+
   # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.0
@@ -70,6 +78,14 @@ MealRec+L:
   weight_matrix_random_subset_min_k: 2
   weight_matrix_random_subset_max_k: 3
 
+  # Weight-matrix keep-bottom-k rebuild
+  # Keeps the lowest-weight observed U-B edges, with optional epoch-wise random subset sampling.
+  use_weight_matrix_keep_bottomk_rebuild: False
+  weight_matrix_keep_bottomk_k: 0
+  use_weight_matrix_keep_bottomk_random_subset: False
+  weight_matrix_keep_bottomk_random_subset_min_k: 2
+  weight_matrix_keep_bottomk_random_subset_max_k: 3
+
   # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.05
@@ -110,6 +126,7 @@ iFashion:
   # Enable at most one main branch below at a time:
   # - use_weight_matrix_rebuild
   # - use_weight_matrix_prune_bottomk
+  # - use_weight_matrix_keep_bottomk_rebuild
   # use_observed_ub_rebuild_mask only affects the original CBDM path.
   use_weight_matrix_rebuild: False
   use_weight_matrix_prune_bottomk: False
@@ -119,6 +136,14 @@ iFashion:
   weight_matrix_prune_k: 0
   weight_matrix_random_subset_min_k: 2
   weight_matrix_random_subset_max_k: 3
+
+  # Weight-matrix keep-bottom-k rebuild
+  # Keeps the lowest-weight observed U-B edges, with optional epoch-wise random subset sampling.
+  use_weight_matrix_keep_bottomk_rebuild: False
+  weight_matrix_keep_bottomk_k: 0
+  use_weight_matrix_keep_bottomk_random_subset: False
+  weight_matrix_keep_bottomk_random_subset_min_k: 2
+  weight_matrix_keep_bottomk_random_subset_max_k: 3
 
   # DCBR encoder / objective settings
   num_layers: 2

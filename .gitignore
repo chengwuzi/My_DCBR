@@ -1,0 +1,13 @@
+/weightMatrix/DCBR-iFashion-noBLCC_observed_analysis-cbdm-final-observed-ranking.txt
+/weightMatrix/DCBR-iFashion-noBLCC_observed_analysis-cbdm-epoch-top1.txt
+/weightMatrix/cbdm_weight_analysis-summary.txt
+/weightMatrix/cbdm_weight_analysis-per-user.csv
+/weightMatrix/cbdm_weight_analysis-epoch-weight-rank.csv
+/weightMatrix/cbdm_weight_analysis-epoch-transition.csv
+/weightMatrix/analyze_top1_set_bottomk_overlap.py
+/weightMatrix/analyze_top1_rank_position.py
+/weightMatrix/analyze_cbdm_weight_matrix.py
+/weightMatrix/top1_rank_position-per-user.csv
+/weightMatrix/top1_rank_position-summary.csv
+/weightMatrix/top1_set_bottomk_overlap-per-user.csv
+/weightMatrix/top1_set_bottomk_overlap-summary.csv
