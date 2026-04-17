@@ -1,6 +1,7 @@
 MealRec+H:
   # CBDM / diffusion base settings
   use_blcc: True
+  export_cbdm_analysis: False
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -45,6 +46,7 @@ MealRec+H:
 MealRec+L:
   # CBDM / diffusion base settings
   use_blcc: True
+  export_cbdm_analysis: False
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -87,8 +89,11 @@ MealRec+L:
 
 
 iFashion:
+
   # CBDM / diffusion base settings
   use_blcc: True
+  export_cbdm_analysis: False
+
   dims: [1000]
   norm: False
   time_emb_dim: 10

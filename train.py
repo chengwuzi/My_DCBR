@@ -53,6 +53,23 @@ def build_ub_propagation_graph(ub_graph, conf, device):
     ).to(device)
 
 
+def write_analysis_lines(file_path, lines):
+    with open(file_path, "w", encoding="utf-8") as f:
+        for line in lines:
+            f.write(f"{line}\n")
+
+
+def write_cbdm_epoch_top1_matrix(file_path, top1_by_epoch, num_users, num_epochs):
+    header = ["user_id"] + [f"epoch_{epoch}" for epoch in range(num_epochs)]
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("\t".join(header) + "\n")
+        for user_id in range(num_users):
+            row = [str(user_id)]
+            for epoch in range(num_epochs):
+                row.append(str(top1_by_epoch[epoch][user_id]))
+            f.write("\t".join(row) + "\n")
+
+
 def main():
     paras = get_cmd().__dict__
     set_seed(paras["seed"])
@@ -85,6 +102,12 @@ def main():
     checkpoint_model_path = checkpoint_model_path + "/" + setting + ".pth"
     conf["log_path"] = log_path
     conf["checkpoint_model_path"] = checkpoint_model_path
+
+    analysis_dir = f"./analysis/{conf['dataset']}/{conf['model']}"
+    if not os.path.isdir(analysis_dir):
+        os.makedirs(analysis_dir)
+    conf["cbdm_final_ranking_path"] = f"{analysis_dir}/{setting}-cbdm-final-observed-ranking.txt"
+    conf["cbdm_epoch_top1_path"] = f"{analysis_dir}/{setting}-cbdm-epoch-top1.txt"
     
     dataset = Datasets(conf)
     write_log(conf, log_path)
@@ -114,6 +137,7 @@ def main():
     cbdm_optimizer = None
     static_ub_propagation_graph = None
     use_blcc = conf.get("use_blcc", True)
+    export_cbdm_analysis = conf.get("export_cbdm_analysis", False)
     use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
     use_weight_matrix_random_subset = conf.get("use_weight_matrix_random_subset", False)
     if use_weight_matrix_prune_bottomk:
@@ -129,12 +153,17 @@ def main():
         if use_observed_ub_rebuild_mask:
             write_log("Use observed-only CBDM rebuild: top-k is selected only from observed train U-B interactions.", log_path)
         write_log(f"CBDM BLCC enabled: {use_blcc}", log_path)
+        if export_cbdm_analysis:
+            write_log("CBDM analysis export enabled: will dump final observed-edge ranking and per-epoch observed-edge top1.", log_path)
         # Conditional Bundle Diffusion Model (CBDM)
         out_dims = conf["dims"] + [conf["num_bundles"]]
         in_dims = out_dims[::-1]
         denoise_model = DNN(in_dims, out_dims, conf["time_emb_dim"], norm=conf["norm"]).to(device)
         diffusion_model = GaussianDiffusion(conf["noise_scale"], conf["noise_min"], conf["noise_max"], conf["steps"]).to(device)
         cbdm_optimizer = torch.optim.Adam(denoise_model.parameters(), lr=conf["lr"], weight_decay=0)
+    if export_cbdm_analysis and (use_weight_matrix_rebuild or use_weight_matrix_prune_bottomk):
+        write_log("CBDM analysis export requested, but CBDM is skipped by the current weight-matrix branch. Export will be ignored.", log_path)
+        export_cbdm_analysis = False
 
     batch_cnt = len(dataset.train_loader)
     test_interval_bs = int(batch_cnt * conf["test_interval"])
@@ -142,6 +171,8 @@ def main():
     best_metrics = init_best_metrics(conf)
     best_epoch = 0
     best_content = None
+    cbdm_epoch_top1_by_epoch = {}
+    cbdm_final_ranking_lines = []
     for epoch in range(conf['epochs']):
         if use_weight_matrix_prune_bottomk:
             UB_propagation_graph = static_ub_propagation_graph
@@ -186,6 +217,28 @@ def main():
                     batch_user_bundle, batch_user_index = batch
                     batch_user_bundle, batch_user_index = batch_user_bundle.to(device), batch_user_index.to(device)
                     denoised_batch = diffusion_model.p_sample(denoise_model, batch_user_bundle, conf["sampling_steps"], conf["sampling_noise"])
+
+                    if export_cbdm_analysis:
+                        observed_mask_for_analysis = batch_user_bundle > 0
+                        epoch_top1_map = cbdm_epoch_top1_by_epoch.setdefault(epoch, {})
+                        for row_idx in range(batch_user_index.shape[0]):
+                            observed_indices = torch.nonzero(observed_mask_for_analysis[row_idx], as_tuple=False).view(-1)
+                            observed_scores = denoised_batch[row_idx, observed_indices]
+                            sorted_scores, sorted_order = torch.sort(observed_scores, descending=True)
+                            sorted_bundle_indices = observed_indices[sorted_order]
+
+                            user_id = int(batch_user_index[row_idx].item())
+                            top1_bundle_id = int(sorted_bundle_indices[0].item())
+                            epoch_top1_map[user_id] = top1_bundle_id
+
+                            if epoch == conf["epochs"] - 1:
+                                for rank_idx in range(sorted_bundle_indices.shape[0]):
+                                    bundle_id = int(sorted_bundle_indices[rank_idx].item())
+                                    score = float(sorted_scores[rank_idx].item())
+                                    cbdm_final_ranking_lines.append(
+                                        f"{user_id}\t{bundle_id}\t{rank_idx + 1}\t{score:.10f}"
+                                    )
+
                     if use_observed_ub_rebuild_mask:
                         observed_mask = batch_user_bundle > 0
                         denoised_batch = denoised_batch.masked_fill(~observed_mask, -1e8)
@@ -230,6 +283,11 @@ def main():
                 metrics["val"] = test(model, dataset.val_loader, conf)
                 metrics["test"] = test(model, dataset.test_loader, conf)
                 best_metrics, best_epoch, best_content = log_metrics(conf, model, metrics, log_path, checkpoint_model_path, epoch, best_metrics, best_epoch, best_content)
+    if export_cbdm_analysis:
+        write_analysis_lines(conf["cbdm_final_ranking_path"], cbdm_final_ranking_lines)
+        write_cbdm_epoch_top1_matrix(conf["cbdm_epoch_top1_path"], cbdm_epoch_top1_by_epoch, conf["num_users"], conf["epochs"])
+        write_log(f"CBDM final observed-edge ranking exported to: {conf['cbdm_final_ranking_path']}", log_path)
+        write_log(f"CBDM per-epoch observed-edge top1 exported to: {conf['cbdm_epoch_top1_path']}", log_path)
     write_log("="*26 + " BEST " + "="*26, log_path)
     write_log(best_content, log_path)
 
