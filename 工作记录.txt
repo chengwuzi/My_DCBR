@@ -1,0 +1,150 @@
+My_DCBR 工作记录
+主题：围绕“如何利用 BOD 导出的权重矩阵替代/逼近 CBDM 的 top1 选择，从而获得 DCBR 的指标增益”开展的整条研究与开发线
+
+一、项目与问题背景
+1. 当前主要只关注 iFashion 数据集。
+2. 原始 DCBR 在训练时会先训练 CBDM 扩散模型，再根据 CBDM 对 U-B 交互的打分选择 top1，构造新的 UB 图进入后续训练。
+3. 研究目标是：尝试用已有的 BOD 导出权重矩阵 iFashion_UB.txt 替代或逼近 CBDM 的 top1 选择逻辑，减少 CBDM 的训练开销，同时尽量保住 DCBR 相对 MultiCBR 的指标涨点。
+
+二、权重矩阵文件的基本事实
+1. 目录：weightMatrix/
+2. 关键文件：
+   - iFashion_UB.txt：BOD 导出的训练集 observed U-B 边权重文件
+   - UB_WEIGHT_MATRIX_HANDOFF.txt：交接说明
+   - BOD相关文件/：BOD 的相关训练与导出代码
+3. 已核实事实：
+   - iFashion_UB.txt 不是稠密矩阵，而是 observed train U-B edge list
+   - 行数 1213676，与 datasets/iFashion/user_bundle_train.txt 的边数完全一致
+   - 前两列 (user_id, bundle_id) 与 train U-B 边全量一一对应
+   - 用户范围 0..53896，bundle 范围 0..27693
+4. iFashion 训练集用户 bundle 交互统计：
+   - 用户数：53897
+   - 训练边数：1213676
+   - 平均每用户 22.5184 条
+   - 中位数 19
+   - p10=14, p20=15, p30=16, p40=18, p50=19, p60=21, p70=22, p80=26, p90=34
+   - 最小 14，最大 406
+
+三、代码层面的关键理解
+1. 原始 DCBR 的 UB 图只影响训练期的 UB view / contrastive 支路，测试时最终 user/bundle 表示主要来自 UI + BI 融合。
+2. BPR 训练仍然使用完整训练集正样本，不会因为 UB 重建图变 sparse 就只剩少量监督。
+3. 因此 CBDM top1 更像“训练期的结构锚点”，不是最终推荐 top1。
+4. 实验已经证明 use_observed_ub_rebuild_mask 打开后和原始 DCBR 几乎没差，说明 CBDM 的 top1 大多数本来就在 observed train U-B 边里。
+
+四、已经完成的代码改造
+1. use_weight_matrix_rebuild
+   - 作用：跳过 CBDM，直接按权重矩阵为每个用户保留 topk 条边，构造静态 UB 图
+   - 可选 use_weight_matrix_random_subset：每个 epoch 从正向 topk 候选中随机采样子集
+2. use_observed_ub_rebuild_mask
+   - 作用：CBDM 路径下，只允许从真实 observed train U-B 中选 topk
+3. use_weight_matrix_prune_bottomk
+   - 作用：跳过 CBDM，对每个用户删除最低权重的 k 条 observed U-B，剩余边构造静态 UB 图
+4. use_blcc
+   - 作用：控制 BLCC 开关，默认开；关闭时 CBDM 退化为只使用交互进行扩散去噪
+5. export_cbdm_analysis
+   - 作用：在原始 CBDM 路径下导出分析文件
+   - 导出文件：
+     - 最后一轮 observed U-B 排序文件
+     - 每个用户每个 epoch 的 top1 宽表
+6. use_weight_matrix_keep_bottomk_rebuild
+   - 作用：跳过 CBDM，按权重矩阵为每个用户保留倒数 topk 条边，构造静态 UB 图
+   - 可选 use_weight_matrix_keep_bottomk_random_subset：每个 epoch 从倒数 topk 候选中随机采样子集
+7. 配置文件 configs/models/DCBR.yaml 已按块整理，并为新功能加了注释；新配置块已经单独隔开。
+
+五、CBDM 分析导出与统计脚本
+1. 导出的分析文件位于 weightMatrix/：
+   - DCBR-iFashion-noBLCC_observed_analysis-cbdm-final-observed-ranking.txt
+   - DCBR-iFashion-noBLCC_observed_analysis-cbdm-epoch-top1.txt
+2. 已开发的统计脚本：
+   - analyze_cbdm_weight_matrix.py
+     用途：总体比较 CBDM 排序与 BOD 权重矩阵排序、top1 动态变化等
+   - analyze_top1_rank_position.py
+     用途：统计 CBDM top1 在 BOD 权重矩阵中的排名与百分比位置
+   - analyze_top1_set_bottomk_overlap.py
+     用途：统计“每个用户所有出现过的 CBDM top1 集合”与 BOD 倒数 topk 的重合度
+   - analyze_top1_percentile_dynamics.py
+     用途：统计 CBDM top1 在 BOD 排序中的百分位区间分布，以及早中晚阶段差异
+
+六、关键统计结论（非常重要）
+1. 无 BLCC 的 CBDM 最终排序，与 BOD 权重矩阵排序整体呈明显反向关系
+   - final_top1_exact_match_pct ≈ 1.857%
+   - mean_spearman ≈ -0.4617
+   - 如果把 BOD 排序反过来，相关性会变成正向
+2. CBDM 最终 top1 在 BOD 排序里的位置明显靠后
+   - final epoch mean rank ≈ 17.4181
+   - final epoch median rank = 16
+   - final epoch mean percentile ≈ 77.64%
+   - final epoch median percentile ≈ 88.00%
+3. CBDM top1 并不是只偏爱“倒数第 1 或第 2”，而是更偏爱 BOD 排序的后段区域
+4. 按百分位理解：
+   - 全 30 个 epoch 合起来：
+     - 平均位置 ≈ 78.18%
+     - 中位数位置 ≈ 88.89%
+   - 主要覆盖区间：
+     - 80%-100% 覆盖 ≈ 63.45%
+     - 85%-100% 覆盖 ≈ 57.32%
+     - 90%-100% 覆盖 ≈ 47.82%
+5. 早期与后期的差别：
+   - 早期 epoch_0_4 更偏极端尾部
+   - 后期 epoch_15_29 仍然明显偏后段，但相对稍微往前回收一点
+   - 变化幅度不算特别大，是“轻微回收”，不是彻底换风格
+6. CBDM top1 在 epoch 间变化非常明显，不是固定的
+   - 平均每个用户出现过约 3.93 个不同 top1
+   - 只有约 3.94% 用户 30 个 epoch 都不变
+   - 相邻 epoch 的 top1 变化率大约在 26.67% 到 58.21% 之间
+   - 说明 CBDM 的价值之一，很可能是“动态结构锚点”
+
+七、关于 BOD 权重语义的当前理解
+1. 从 BOD 代码看，导出时没有对权重做显式翻转，generator 输出直接写入文件。
+2. generator 输出不仅用于 weighted BPR，也用于 weighted alignment。
+3. BOD 里的这个数更像“训练梯度调节系数 / meta-weight”，而不是朴素的“边重要性分数”。
+4. 因此不能简单把“数值越大”理解为“越接近 CBDM 会选中的边”。
+5. 实证上，越接近 CBDM 偏好的，反而是 BOD 排序后段/小值区域。
+
+八、实验结果的阶段性结论
+1. 原始 DCBR 最强，当前仍未被权重矩阵方案追平。
+2. use_observed_ub_rebuild_mask 与原始 DCBR 几乎无差，说明 DCBR 增益不是靠挖出大量未观测边。
+3. 正向权重矩阵保留 topk：
+   - 可以带来一定提升，但明显弱于 DCBR
+   - 并且通常在 epoch 9 左右早熟，后面开始掉
+4. 正向 topk + 随机采样：
+   - 效果通常比静态正向 topk 更差
+5. prune_bottomk（删除低权重边）：
+   - 效果与正向 topk 相近，没有突破
+6. 保留倒数 topk：
+   - 是目前所有权重矩阵利用方式里表现最好的一条
+   - 比正向 topk、随机采样、prune_bottomk 更接近原始 DCBR
+   - 但目前也基本触到瓶颈，仍未追平原始 DCBR
+7. 当前阶段性排序可粗略理解为：
+   - 原始 DCBR
+   - 保留倒数 topk
+   - 正向 topk / prune_bottomk
+   - 随机采样版本
+
+九、为什么“保留倒数 topk”这条线目前也到瓶颈
+1. 它复刻了 CBDM 偏好的“后段候选区域”，但没有复刻 CBDM 的“动态选择机制”。
+2. CBDM 不是静态地盯着某个固定边，而是在训练过程中持续变化 top1。
+3. 因此即使倒数 topk 方向对了，静态 UB 图也只能逼近一部分机制。
+4. 当前判断：这条线已证明方向有效，但继续只做静态倒数 topk，收益上限大概率有限。
+
+十、当前结论与后续建议
+1. 当前这条“利用 BOD 权重矩阵替代 CBDM top1”的线，已经做了比较充分的探索。
+2. 已经确认：
+   - 正向 topk 方向不对
+   - 倒数后段方向更接近 CBDM
+   - CBDM 的 top1 具有明显的动态性
+3. 当前最合理的阶段性结论：
+   - BOD 权重矩阵的小值/后段更接近 CBDM 会选中的结构边
+   - 但单靠静态权重矩阵筛边，无法完整复刻 DCBR 的增益
+4. 这条线目前建议先搁置，不继续做新的“百分比区间保留”等开发。
+5. 如果后续重新拾起这条线，最重要的切入点不是继续硬调静态 topk，而应优先考虑：
+   - 如何引入“区域内动态选择”
+   - 如何让权重矩阵与当前训练状态发生耦合
+   - 而不是继续单纯扩大或缩小静态候选池
+
+十一、接手时最需要记住的事
+1. 这条线的核心不是“BOD 权重大还是小”，而是“BOD 排序后段更接近无 BLCC 的 CBDM 偏好”。
+2. CBDM top1 不是固定的，是强动态变化的。
+3. 原始 DCBR 的优势很可能来自“动态结构锚点”，而不只是“选中了哪条边”。
+4. 目前最有效的权重矩阵利用方式是保留倒数 topk，但已经基本到达瓶颈。
+
