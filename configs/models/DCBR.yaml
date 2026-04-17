@@ -1,12 +1,6 @@
 MealRec+H:
-  use_weight_matrix_rebuild: False
-  use_weight_matrix_prune_bottomk: False
-  weight_matrix_prune_k: 0
-  use_observed_ub_rebuild_mask: False
-  use_weight_matrix_random_subset: False
-  weight_matrix_random_subset_min_k: 2
-  weight_matrix_random_subset_max_k: 3
-  weight_matrix_path: ''
+  # CBDM / diffusion base settings
+  use_blcc: True
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -19,6 +13,18 @@ MealRec+H:
   rebuild_k: 1
   lambda_0: 1.0e+3
 
+  # Weight-matrix experiment switches
+  # Keep disabled unless running a specific ablation on external UB weights.
+  use_weight_matrix_rebuild: False
+  use_weight_matrix_prune_bottomk: False
+  use_observed_ub_rebuild_mask: False
+  use_weight_matrix_random_subset: False
+  weight_matrix_path: ''
+  weight_matrix_prune_k: 0
+  weight_matrix_random_subset_min_k: 2
+  weight_matrix_random_subset_max_k: 3
+
+  # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.0
   upsilon_UI: 0.0
@@ -37,14 +43,8 @@ MealRec+H:
 
 
 MealRec+L:
-  use_weight_matrix_rebuild: False
-  use_weight_matrix_prune_bottomk: False
-  weight_matrix_prune_k: 0
-  use_observed_ub_rebuild_mask: False
-  use_weight_matrix_random_subset: False
-  weight_matrix_random_subset_min_k: 2
-  weight_matrix_random_subset_max_k: 3
-  weight_matrix_path: ''
+  # CBDM / diffusion base settings
+  use_blcc: True
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -57,6 +57,18 @@ MealRec+L:
   rebuild_k: 1
   lambda_0: 1.0e+3
 
+  # Weight-matrix experiment switches
+  # Keep disabled unless running a specific ablation on external UB weights.
+  use_weight_matrix_rebuild: False
+  use_weight_matrix_prune_bottomk: False
+  use_observed_ub_rebuild_mask: False
+  use_weight_matrix_random_subset: False
+  weight_matrix_path: ''
+  weight_matrix_prune_k: 0
+  weight_matrix_random_subset_min_k: 2
+  weight_matrix_random_subset_max_k: 3
+
+  # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.05
   upsilon_UI: 0.0
@@ -75,15 +87,8 @@ MealRec+L:
 
 
 iFashion:
-  use_weight_matrix_rebuild: False
-  use_weight_matrix_prune_bottomk: False
-  weight_matrix_prune_k: 0
-  use_observed_ub_rebuild_mask: False
-  use_weight_matrix_random_subset: False
-  weight_matrix_random_subset_min_k: 2
-  weight_matrix_random_subset_max_k: 3
-  weight_matrix_path: './weightMatrix/iFashion_UB.txt'
-
+  # CBDM / diffusion base settings
+  use_blcc: True
   dims: [1000]
   norm: False
   time_emb_dim: 10
@@ -96,6 +101,21 @@ iFashion:
   rebuild_k: 1
   lambda_0: 2.0
 
+  # Weight-matrix experiment switches
+  # Enable at most one main branch below at a time:
+  # - use_weight_matrix_rebuild
+  # - use_weight_matrix_prune_bottomk
+  # use_observed_ub_rebuild_mask only affects the original CBDM path.
+  use_weight_matrix_rebuild: False
+  use_weight_matrix_prune_bottomk: False
+  use_observed_ub_rebuild_mask: False
+  use_weight_matrix_random_subset: False
+  weight_matrix_path: './weightMatrix/iFashion_UB.txt'
+  weight_matrix_prune_k: 0
+  weight_matrix_random_subset_min_k: 2
+  weight_matrix_random_subset_max_k: 3
+
+  # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.05
   upsilon_UI: 0.0

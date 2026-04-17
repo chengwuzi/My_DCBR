@@ -333,7 +333,7 @@ class GaussianDiffusion(nn.Module):
         return x_t
 
 
-    def training_CBDM_losses(self, model, x_start, U_Embeds, B_Embeds, batch_user_index):
+    def training_CBDM_losses(self, model, x_start, U_Embeds, B_Embeds, batch_user_index, use_blcc=True):
         batch_size = x_start.size(0)
         ts = torch.randint(0, self.steps, (batch_size,)).long().cuda()
         noise = torch.randn_like(x_start)
@@ -348,10 +348,14 @@ class GaussianDiffusion(nn.Module):
         weight = torch.where((ts == 0), 1.0, weight)
         elbo_loss = weight * mse
 
-        B_new_embeds = torch.mm(model_output.transpose(0, 1), U_Embeds[batch_user_index])
-        blcc_loss = self.mean_flat((B_new_embeds - B_Embeds) ** 2)
+        if use_blcc:
+            B_new_embeds = torch.mm(model_output.transpose(0, 1), U_Embeds[batch_user_index])
+            blcc_loss = self.mean_flat((B_new_embeds - B_Embeds) ** 2)
+            blcc_loss = blcc_loss.mean()
+        else:
+            blcc_loss = torch.zeros((), device=x_start.device)
 
-        return elbo_loss.mean(), blcc_loss.mean()
+        return elbo_loss.mean(), blcc_loss
 
 
     def q_sample(self, x_start, t, noise=None):

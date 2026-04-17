@@ -113,6 +113,7 @@ def main():
     diffusion_model = None
     cbdm_optimizer = None
     static_ub_propagation_graph = None
+    use_blcc = conf.get("use_blcc", True)
     use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
     use_weight_matrix_random_subset = conf.get("use_weight_matrix_random_subset", False)
     if use_weight_matrix_prune_bottomk:
@@ -127,6 +128,7 @@ def main():
     else:
         if use_observed_ub_rebuild_mask:
             write_log("Use observed-only CBDM rebuild: top-k is selected only from observed train U-B interactions.", log_path)
+        write_log(f"CBDM BLCC enabled: {use_blcc}", log_path)
         # Conditional Bundle Diffusion Model (CBDM)
         out_dims = conf["dims"] + [conf["num_bundles"]]
         in_dims = out_dims[::-1]
@@ -158,12 +160,15 @@ def main():
             for i, batch in pbar_diffusion:
                 batch_user_bundle, batch_user_index = batch
                 batch_user_bundle, batch_user_index = batch_user_bundle.to(device), batch_user_index.to(device)
-                uEmbeds = model.getUserEmbeds().detach()
-                bEmbeds = model.getBundleEmbeds().detach()
+                uEmbeds = model.getUserEmbeds().detach() if use_blcc else None
+                bEmbeds = model.getBundleEmbeds().detach() if use_blcc else None
                 
                 cbdm_optimizer.zero_grad()
-                elbo_loss, blcc_loss = diffusion_model.training_CBDM_losses(denoise_model, batch_user_bundle, uEmbeds, bEmbeds, batch_user_index)
-                blcc_loss *= conf["lambda_0"]
+                elbo_loss, blcc_loss = diffusion_model.training_CBDM_losses(
+                    denoise_model, batch_user_bundle, uEmbeds, bEmbeds, batch_user_index, use_blcc=use_blcc
+                )
+                if use_blcc:
+                    blcc_loss *= conf["lambda_0"]
                 loss = elbo_loss + blcc_loss
                 loss.backward()
                 cbdm_optimizer.step()
