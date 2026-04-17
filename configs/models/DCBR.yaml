@@ -91,8 +91,8 @@ MealRec+L:
 iFashion:
 
   # CBDM / diffusion base settings
-  use_blcc: True
-  export_cbdm_analysis: False
+  use_blcc: False
+  export_cbdm_analysis: True
 
   dims: [1000]
   norm: False
@@ -113,7 +113,7 @@ iFashion:
   # use_observed_ub_rebuild_mask only affects the original CBDM path.
   use_weight_matrix_rebuild: False
   use_weight_matrix_prune_bottomk: False
-  use_observed_ub_rebuild_mask: False
+  use_observed_ub_rebuild_mask: True
   use_weight_matrix_random_subset: False
   weight_matrix_path: './weightMatrix/iFashion_UB.txt'
   weight_matrix_prune_k: 0
@@ -135,4 +135,4 @@ iFashion:
   tau: 0.08
   lambda_1: 0.3
   lambda_2: 1.0e-6
-  epochs: 50
+  epochs: 30
