@@ -33,6 +33,40 @@ MealRec+H:
   weight_matrix_keep_bottomk_random_subset_min_k: 2
   weight_matrix_keep_bottomk_random_subset_max_k: 3
 
+  # Masked Bundle Modeling rebuild on external LightGCN embeddings
+  use_mbm_rebuild: False
+  mbm_user_embedding_path: ''
+  mbm_bundle_embedding_path: ''
+  mbm_hidden_dim: 128
+  mbm_dropout: 0.1
+  mbm_phi_layers: 2
+  mbm_rho_layers: 2
+  mbm_scorer_layers: 2
+  mbm_mask_ratio: 0.3
+  mbm_neg_num: 50
+  mbm_lr: 1.0e-3
+  mbm_weight_decay: 1.0e-5
+  mbm_batch_size: 1024
+  mbm_infer_batch_size: 1024
+  mbm_score_mode: 'hybrid'
+  mbm_anchor_lambda: 0.5
+  mbm_contribution_metric: 'context_shift'
+
+  # Anchor-conditioned reconstruction rebuild on external LightGCN embeddings
+  use_anchor_rebuild: False
+  anchor_user_embedding_path: ''
+  anchor_bundle_embedding_path: ''
+  anchor_hidden_dim: 128
+  anchor_dropout: 0.1
+  anchor_encoder_layers: 2
+  anchor_scorer_layers: 2
+  anchor_neg_num: 50
+  anchor_lr: 1.0e-3
+  anchor_weight_decay: 1.0e-5
+  anchor_batch_size: 1024
+  anchor_infer_batch_size: 256
+  anchor_eval_chunk_size: 16
+
   # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.0
@@ -85,6 +119,40 @@ MealRec+L:
   use_weight_matrix_keep_bottomk_random_subset: False
   weight_matrix_keep_bottomk_random_subset_min_k: 2
   weight_matrix_keep_bottomk_random_subset_max_k: 3
+
+  # Masked Bundle Modeling rebuild on external LightGCN embeddings
+  use_mbm_rebuild: False
+  mbm_user_embedding_path: ''
+  mbm_bundle_embedding_path: ''
+  mbm_hidden_dim: 128
+  mbm_dropout: 0.1
+  mbm_phi_layers: 2
+  mbm_rho_layers: 2
+  mbm_scorer_layers: 2
+  mbm_mask_ratio: 0.3
+  mbm_neg_num: 50
+  mbm_lr: 1.0e-3
+  mbm_weight_decay: 1.0e-5
+  mbm_batch_size: 1024
+  mbm_infer_batch_size: 1024
+  mbm_score_mode: 'hybrid'
+  mbm_anchor_lambda: 0.5
+  mbm_contribution_metric: 'context_shift'
+
+  # Anchor-conditioned reconstruction rebuild on external LightGCN embeddings
+  use_anchor_rebuild: False
+  anchor_user_embedding_path: ''
+  anchor_bundle_embedding_path: ''
+  anchor_hidden_dim: 128
+  anchor_dropout: 0.1
+  anchor_encoder_layers: 2
+  anchor_scorer_layers: 2
+  anchor_neg_num: 50
+  anchor_lr: 1.0e-3
+  anchor_weight_decay: 1.0e-5
+  anchor_batch_size: 1024
+  anchor_infer_batch_size: 256
+  anchor_eval_chunk_size: 16
 
   # DCBR encoder / objective settings
   num_layers: 2
@@ -144,6 +212,40 @@ iFashion:
   use_weight_matrix_keep_bottomk_random_subset: False
   weight_matrix_keep_bottomk_random_subset_min_k: 2
   weight_matrix_keep_bottomk_random_subset_max_k: 3
+
+  # Masked Bundle Modeling rebuild on external LightGCN embeddings
+  use_mbm_rebuild: False
+  mbm_user_embedding_path: ''
+  mbm_bundle_embedding_path: ''
+  mbm_hidden_dim: 128
+  mbm_dropout: 0.1
+  mbm_phi_layers: 2
+  mbm_rho_layers: 2
+  mbm_scorer_layers: 2
+  mbm_mask_ratio: 0.3
+  mbm_neg_num: 50
+  mbm_lr: 1.0e-3
+  mbm_weight_decay: 1.0e-5
+  mbm_batch_size: 1024
+  mbm_infer_batch_size: 1024
+  mbm_score_mode: 'hybrid'
+  mbm_anchor_lambda: 0.5
+  mbm_contribution_metric: 'context_shift'
+
+  # Anchor-conditioned reconstruction rebuild on external LightGCN embeddings
+  use_anchor_rebuild: False
+  anchor_user_embedding_path: ''
+  anchor_bundle_embedding_path: ''
+  anchor_hidden_dim: 128
+  anchor_dropout: 0.1
+  anchor_encoder_layers: 2
+  anchor_scorer_layers: 2
+  anchor_neg_num: 50
+  anchor_lr: 1.0e-3
+  anchor_weight_decay: 1.0e-5
+  anchor_batch_size: 1024
+  anchor_infer_batch_size: 256
+  anchor_eval_chunk_size: 16
 
   # DCBR encoder / objective settings
   num_layers: 2

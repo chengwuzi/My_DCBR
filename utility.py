@@ -24,6 +24,46 @@ def print_statistics(X, string, log_path):
     write_log(f'Density of matrix:       {len(nonzero_row_indice)/(X.shape[0]*X.shape[1]):8.4f}', log_path)
 
 
+def load_external_embedding_tensor(path, num_expected, entity_name):
+    if not path:
+        raise ValueError(f"{entity_name} embedding path is required")
+
+    payload = torch.load(path, map_location="cpu")
+    if torch.is_tensor(payload):
+        embedding = payload.detach().float()
+    elif isinstance(payload, np.ndarray):
+        embedding = torch.from_numpy(payload).float()
+    elif isinstance(payload, dict):
+        rows = []
+        for idx in range(num_expected):
+            if idx in payload:
+                value = payload[idx]
+            elif str(idx) in payload:
+                value = payload[str(idx)]
+            else:
+                raise KeyError(
+                    f"{entity_name} embedding file {path} is missing id {idx}; "
+                    "expected a full mapping aligned with current dataset ids"
+                )
+            value = torch.as_tensor(value).detach().float().view(-1)
+            rows.append(value)
+        embedding = torch.stack(rows, dim=0)
+    else:
+        raise TypeError(
+            f"Unsupported payload type {type(payload)} in {path}; "
+            "expected a torch tensor, numpy array, or id->embedding dict"
+        )
+
+    if embedding.ndim != 2:
+        raise ValueError(f"{entity_name} embedding tensor from {path} must be 2D")
+    if embedding.shape[0] != num_expected:
+        raise ValueError(
+            f"{entity_name} embedding tensor from {path} has {embedding.shape[0]} rows, "
+            f"expected {num_expected}"
+        )
+    return embedding.contiguous()
+
+
 class BundleTrainDataset(Dataset):
     def __init__(self, conf, u_b_pairs, u_b_graph, num_bundles, u_b_for_neg_sample, b_b_for_neg_sample, neg_sample=1):
         self.conf = conf
@@ -103,6 +143,8 @@ class Datasets():
         self.bundle_test_data = BundleTestDataset(u_b_pairs_test, u_b_graph_test, u_b_graph_train, self.num_users, self.num_bundles)
 
         self.graphs = [u_b_graph_train, u_i_graph, b_i_graph]
+        self.user_observed_bundles = self.build_user_observed_bundles(u_b_graph_train)
+        self.user_observed_bundle_sets = [set(bundles) for bundles in self.user_observed_bundles]
         self.weight_matrix_ub_graph = None
         self.weight_matrix_pruned_ub_graph = None
         self.weight_matrix_bottomk_ub_graph = None
@@ -179,6 +221,17 @@ class Datasets():
         print_statistics(u_b_graph, f"U-B statistics in {task}", self.conf["log_path"])
 
         return u_b_pairs, u_b_graph
+
+
+    def build_user_observed_bundles(self, u_b_graph):
+        user_observed_bundles = []
+        indptr = u_b_graph.indptr
+        indices = u_b_graph.indices
+        for user_id in range(self.num_users):
+            start = indptr[user_id]
+            end = indptr[user_id + 1]
+            user_observed_bundles.append(indices[start:end].astype(np.int64).tolist())
+        return user_observed_bundles
 
 
     def get_weight_matrix_user_edges(self):

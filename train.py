@@ -6,8 +6,10 @@ import numpy as np
 from tqdm import tqdm
 import scipy.sparse as sp
 import torch
-from utility import Datasets, DiffusionDataset, write_log
+from utility import Datasets, DiffusionDataset, load_external_embedding_tensor, print_statistics, write_log
 from models.DCBR import DCBR, DNN, GaussianDiffusion
+from models.AnchorRebuilder import AnchorRebuilder
+from models.MBMRebuilder import MBMRebuilder
 
 
 def set_seed(seed=0):
@@ -70,6 +72,278 @@ def write_cbdm_epoch_top1_matrix(file_path, top1_by_epoch, num_users, num_epochs
             f.write("\t".join(row) + "\n")
 
 
+def sample_mbm_batch(dataset, user_indices, conf, device):
+    context_lists = []
+    pos_bundles = []
+    neg_bundles = []
+    selected_users = []
+
+    neg_num = conf["mbm_neg_num"]
+    mask_ratio = conf["mbm_mask_ratio"]
+
+    for user_id in user_indices:
+        observed = dataset.user_observed_bundles[user_id]
+        if len(observed) <= 1:
+            continue
+
+        observed = np.asarray(observed, dtype=np.int64)
+        pos_pos = np.random.randint(observed.shape[0])
+        pos_bundle = int(observed[pos_pos])
+        remaining = np.delete(observed, pos_pos)
+        if remaining.shape[0] == 0:
+            continue
+
+        extra_mask = int(np.floor(remaining.shape[0] * mask_ratio))
+        extra_mask = min(extra_mask, max(0, remaining.shape[0] - 1))
+        if extra_mask > 0:
+            drop_indices = np.random.choice(remaining.shape[0], size=extra_mask, replace=False)
+            context = np.delete(remaining, drop_indices)
+        else:
+            context = remaining
+        if context.shape[0] == 0:
+            context = remaining[:1]
+
+        negatives = []
+        observed_set = dataset.user_observed_bundle_sets[user_id]
+        while len(negatives) < neg_num:
+            candidate = np.random.randint(dataset.num_bundles)
+            if candidate in observed_set or candidate in negatives:
+                continue
+            negatives.append(candidate)
+
+        context_lists.append(context.tolist())
+        pos_bundles.append(pos_bundle)
+        neg_bundles.append(negatives)
+        selected_users.append(user_id)
+
+    if not selected_users:
+        return None
+
+    max_context_len = max(len(context) for context in context_lists)
+    context_indices = torch.full(
+        (len(selected_users), max_context_len),
+        -1,
+        dtype=torch.long,
+        device=device,
+    )
+    context_mask = torch.zeros(
+        (len(selected_users), max_context_len),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    for row_idx, context in enumerate(context_lists):
+        context_tensor = torch.tensor(context, dtype=torch.long, device=device)
+        context_indices[row_idx, :context_tensor.shape[0]] = context_tensor
+        context_mask[row_idx, :context_tensor.shape[0]] = 1.0
+
+    return {
+        "user_indices": torch.tensor(selected_users, dtype=torch.long, device=device),
+        "context_indices": context_indices,
+        "context_mask": context_mask,
+        "pos_indices": torch.tensor(pos_bundles, dtype=torch.long, device=device),
+        "neg_indices": torch.tensor(neg_bundles, dtype=torch.long, device=device),
+    }
+
+
+def train_mbm_epoch(mbm_model, mbm_optimizer, dataset, conf, device):
+    user_order = np.random.permutation(dataset.num_users)
+    batch_size = conf["mbm_batch_size"]
+    step_num = (dataset.num_users + batch_size - 1) // batch_size
+    pbar = tqdm(range(step_num), total=step_num)
+    total_loss = 0.0
+    effective_steps = 0
+
+    mbm_model.train(True)
+    for step_idx in pbar:
+        start = step_idx * batch_size
+        end = min((step_idx + 1) * batch_size, dataset.num_users)
+        batch = sample_mbm_batch(dataset, user_order[start:end], conf, device)
+        if batch is None:
+            continue
+
+        mbm_optimizer.zero_grad()
+        loss = mbm_model.training_loss(batch)
+        loss.backward()
+        mbm_optimizer.step()
+
+        total_loss += loss.detach().item()
+        effective_steps += 1
+        pbar.set_description(f'MBM Step: {step_idx + 1}/{step_num} | loss: {loss.detach():8.4f}')
+
+    return total_loss / max(effective_steps, 1)
+
+
+def rebuild_ub_graph_with_mbm(mbm_model, dataset, conf, device):
+    batch_size = conf["mbm_infer_batch_size"]
+    rebuild_k = conf["rebuild_k"]
+    user_indices = np.arange(dataset.num_users)
+    u_list = []
+    b_list = []
+    edge_list = []
+
+    mbm_model.eval()
+    with torch.no_grad():
+        for start in tqdm(range(0, dataset.num_users, batch_size), desc="MBM Rebuild"):
+            end = min(start + batch_size, dataset.num_users)
+            batch_users = user_indices[start:end]
+            batch_observed = dataset.user_observed_bundles[start:end]
+            max_len = max(len(observed) for observed in batch_observed)
+
+            observed_tensor = torch.full(
+                (len(batch_users), max_len),
+                -1,
+                dtype=torch.long,
+                device=device,
+            )
+            for row_idx, observed in enumerate(batch_observed):
+                observed_idx = torch.tensor(observed, dtype=torch.long, device=device)
+                observed_tensor[row_idx, :observed_idx.shape[0]] = observed_idx
+
+            selected_bundles, selected_valid = mbm_model.rebuild_topk(
+                torch.tensor(batch_users, dtype=torch.long, device=device),
+                observed_tensor,
+                rebuild_k=rebuild_k,
+            )
+
+            selected_bundles = selected_bundles.cpu().numpy()
+            selected_valid = selected_valid.cpu().numpy()
+            for row_idx, user_id in enumerate(batch_users):
+                for col_idx in range(selected_bundles.shape[1]):
+                    if not selected_valid[row_idx, col_idx]:
+                        continue
+                    u_list.append(int(user_id))
+                    b_list.append(int(selected_bundles[row_idx, col_idx]))
+                    edge_list.append(1.0)
+
+    rebuilt_ub_graph = sp.coo_matrix(
+        (np.array(edge_list, dtype=np.float32), (np.array(u_list, dtype=np.int32), np.array(b_list, dtype=np.int32))),
+        shape=(dataset.num_users, dataset.num_bundles),
+    ).tocsr()
+    return rebuilt_ub_graph
+
+
+def sample_anchor_batch(dataset, user_indices, conf, device):
+    anchor_users = []
+    anchor_bundles = []
+    pos_bundles = []
+    neg_bundles = []
+
+    neg_num = conf["anchor_neg_num"]
+    for user_id in user_indices:
+        observed = dataset.user_observed_bundles[user_id]
+        if len(observed) <= 1:
+            continue
+
+        observed = np.asarray(observed, dtype=np.int64)
+        anchor_pos = np.random.randint(observed.shape[0])
+        anchor_bundle = int(observed[anchor_pos])
+        remaining = np.delete(observed, anchor_pos)
+        if remaining.shape[0] == 0:
+            continue
+
+        pos_bundle = int(remaining[np.random.randint(remaining.shape[0])])
+        negatives = []
+        observed_set = dataset.user_observed_bundle_sets[user_id]
+        while len(negatives) < neg_num:
+            candidate = np.random.randint(dataset.num_bundles)
+            if candidate in observed_set or candidate in negatives:
+                continue
+            negatives.append(candidate)
+
+        anchor_users.append(user_id)
+        anchor_bundles.append(anchor_bundle)
+        pos_bundles.append(pos_bundle)
+        neg_bundles.append(negatives)
+
+    if not anchor_users:
+        return None
+
+    return {
+        "user_indices": torch.tensor(anchor_users, dtype=torch.long, device=device),
+        "anchor_indices": torch.tensor(anchor_bundles, dtype=torch.long, device=device),
+        "pos_indices": torch.tensor(pos_bundles, dtype=torch.long, device=device),
+        "neg_indices": torch.tensor(neg_bundles, dtype=torch.long, device=device),
+    }
+
+
+def train_anchor_epoch(anchor_model, anchor_optimizer, dataset, conf, device):
+    user_order = np.random.permutation(dataset.num_users)
+    batch_size = conf["anchor_batch_size"]
+    step_num = (dataset.num_users + batch_size - 1) // batch_size
+    pbar = tqdm(range(step_num), total=step_num)
+    total_loss = 0.0
+    effective_steps = 0
+
+    anchor_model.train(True)
+    for step_idx in pbar:
+        start = step_idx * batch_size
+        end = min((step_idx + 1) * batch_size, dataset.num_users)
+        batch = sample_anchor_batch(dataset, user_order[start:end], conf, device)
+        if batch is None:
+            continue
+
+        anchor_optimizer.zero_grad()
+        loss = anchor_model.training_loss(batch)
+        loss.backward()
+        anchor_optimizer.step()
+
+        total_loss += loss.detach().item()
+        effective_steps += 1
+        pbar.set_description(f'Anchor Step: {step_idx + 1}/{step_num} | loss: {loss.detach():8.4f}')
+
+    return total_loss / max(effective_steps, 1)
+
+
+def rebuild_ub_graph_with_anchor(anchor_model, dataset, conf, device):
+    batch_size = conf["anchor_infer_batch_size"]
+    rebuild_k = conf["rebuild_k"]
+    user_indices = np.arange(dataset.num_users)
+    u_list = []
+    b_list = []
+    edge_list = []
+
+    anchor_model.eval()
+    with torch.no_grad():
+        for start in tqdm(range(0, dataset.num_users, batch_size), desc="Anchor Rebuild"):
+            end = min(start + batch_size, dataset.num_users)
+            batch_users = user_indices[start:end]
+            batch_observed = dataset.user_observed_bundles[start:end]
+            max_len = max(len(observed) for observed in batch_observed)
+
+            observed_tensor = torch.full(
+                (len(batch_users), max_len),
+                -1,
+                dtype=torch.long,
+                device=device,
+            )
+            for row_idx, observed in enumerate(batch_observed):
+                observed_idx = torch.tensor(observed, dtype=torch.long, device=device)
+                observed_tensor[row_idx, :observed_idx.shape[0]] = observed_idx
+
+            selected_bundles, selected_valid = anchor_model.rebuild_topk(
+                torch.tensor(batch_users, dtype=torch.long, device=device),
+                observed_tensor,
+                rebuild_k=rebuild_k,
+            )
+
+            selected_bundles = selected_bundles.cpu().numpy()
+            selected_valid = selected_valid.cpu().numpy()
+            for row_idx, user_id in enumerate(batch_users):
+                for col_idx in range(selected_bundles.shape[1]):
+                    if not selected_valid[row_idx, col_idx]:
+                        continue
+                    u_list.append(int(user_id))
+                    b_list.append(int(selected_bundles[row_idx, col_idx]))
+                    edge_list.append(1.0)
+
+    rebuilt_ub_graph = sp.coo_matrix(
+        (np.array(edge_list, dtype=np.float32), (np.array(u_list, dtype=np.int32), np.array(b_list, dtype=np.int32))),
+        shape=(dataset.num_users, dataset.num_bundles),
+    ).tocsr()
+    return rebuilt_ub_graph
+
+
 def main():
     paras = get_cmd().__dict__
     set_seed(paras["seed"])
@@ -129,6 +403,8 @@ def main():
     use_weight_matrix_rebuild = conf.get("use_weight_matrix_rebuild", False)
     use_weight_matrix_prune_bottomk = conf.get("use_weight_matrix_prune_bottomk", False)
     use_weight_matrix_keep_bottomk_rebuild = conf.get("use_weight_matrix_keep_bottomk_rebuild", False)
+    use_mbm_rebuild = conf.get("use_mbm_rebuild", False)
+    use_anchor_rebuild = conf.get("use_anchor_rebuild", False)
 
     enabled_weight_matrix_branches = sum(
         int(flag)
@@ -136,17 +412,24 @@ def main():
             use_weight_matrix_rebuild,
             use_weight_matrix_prune_bottomk,
             use_weight_matrix_keep_bottomk_rebuild,
+            use_mbm_rebuild,
+            use_anchor_rebuild,
         )
     )
     if enabled_weight_matrix_branches > 1:
         raise ValueError(
-            "Only one weight-matrix main branch can be enabled at a time: "
-            "use_weight_matrix_rebuild, use_weight_matrix_prune_bottomk, use_weight_matrix_keep_bottomk_rebuild"
+            "Only one rebuild main branch can be enabled at a time: "
+            "use_weight_matrix_rebuild, use_weight_matrix_prune_bottomk, "
+            "use_weight_matrix_keep_bottomk_rebuild, use_mbm_rebuild, use_anchor_rebuild"
         )
 
     denoise_model = None
     diffusion_model = None
     cbdm_optimizer = None
+    mbm_model = None
+    mbm_optimizer = None
+    anchor_model = None
+    anchor_optimizer = None
     static_ub_propagation_graph = None
     use_blcc = conf.get("use_blcc", True)
     export_cbdm_analysis = conf.get("export_cbdm_analysis", False)
@@ -168,6 +451,46 @@ def main():
         else:
             static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_ub_graph, conf, device)
             write_log("Use weight matrix rebuild: skip CBDM training and rebuild UB graph from weight matrix top-k.", log_path)
+    elif use_mbm_rebuild:
+        user_embedding_tensor = load_external_embedding_tensor(
+            conf["mbm_user_embedding_path"],
+            dataset.num_users,
+            "user",
+        )
+        bundle_embedding_tensor = load_external_embedding_tensor(
+            conf["mbm_bundle_embedding_path"],
+            dataset.num_bundles,
+            "bundle",
+        )
+        if user_embedding_tensor.shape[1] != bundle_embedding_tensor.shape[1]:
+            raise ValueError("MBM user and bundle embeddings must share the same dimension")
+        mbm_model = MBMRebuilder(conf, user_embedding_tensor.to(device), bundle_embedding_tensor.to(device)).to(device)
+        mbm_optimizer = torch.optim.Adam(
+            mbm_model.parameters(),
+            lr=conf["mbm_lr"],
+            weight_decay=conf["mbm_weight_decay"],
+        )
+        write_log("Use MBM rebuild: train a masked bundle selector on external LightGCN embeddings and rebuild UB graph from observed top-k anchors.", log_path)
+    elif use_anchor_rebuild:
+        user_embedding_tensor = load_external_embedding_tensor(
+            conf["anchor_user_embedding_path"],
+            dataset.num_users,
+            "user",
+        )
+        bundle_embedding_tensor = load_external_embedding_tensor(
+            conf["anchor_bundle_embedding_path"],
+            dataset.num_bundles,
+            "bundle",
+        )
+        if user_embedding_tensor.shape[1] != bundle_embedding_tensor.shape[1]:
+            raise ValueError("Anchor user and bundle embeddings must share the same dimension")
+        anchor_model = AnchorRebuilder(conf, user_embedding_tensor.to(device), bundle_embedding_tensor.to(device)).to(device)
+        anchor_optimizer = torch.optim.Adam(
+            anchor_model.parameters(),
+            lr=conf["anchor_lr"],
+            weight_decay=conf["anchor_weight_decay"],
+        )
+        write_log("Use Anchor rebuild: train an anchor-conditioned bundle reconstructor on external LightGCN embeddings and rebuild UB graph from observed top-k anchors.", log_path)
     else:
         if use_observed_ub_rebuild_mask:
             write_log("Use observed-only CBDM rebuild: top-k is selected only from observed train U-B interactions.", log_path)
@@ -180,8 +503,14 @@ def main():
         denoise_model = DNN(in_dims, out_dims, conf["time_emb_dim"], norm=conf["norm"]).to(device)
         diffusion_model = GaussianDiffusion(conf["noise_scale"], conf["noise_min"], conf["noise_max"], conf["steps"]).to(device)
         cbdm_optimizer = torch.optim.Adam(denoise_model.parameters(), lr=conf["lr"], weight_decay=0)
-    if export_cbdm_analysis and (use_weight_matrix_rebuild or use_weight_matrix_prune_bottomk or use_weight_matrix_keep_bottomk_rebuild):
-        write_log("CBDM analysis export requested, but CBDM is skipped by the current weight-matrix branch. Export will be ignored.", log_path)
+    if export_cbdm_analysis and (
+        use_weight_matrix_rebuild
+        or use_weight_matrix_prune_bottomk
+        or use_weight_matrix_keep_bottomk_rebuild
+        or use_mbm_rebuild
+        or use_anchor_rebuild
+    ):
+        write_log("CBDM analysis export requested, but CBDM is skipped by the current non-CBDM rebuild branch. Export will be ignored.", log_path)
         export_cbdm_analysis = False
 
     batch_cnt = len(dataset.train_loader)
@@ -207,6 +536,20 @@ def main():
                 UB_propagation_graph = build_ub_propagation_graph(sampled_weight_matrix_ub_graph, conf, device)
             else:
                 UB_propagation_graph = static_ub_propagation_graph
+        elif use_mbm_rebuild:
+            mbm_loss = train_mbm_epoch(mbm_model, mbm_optimizer, dataset, conf, device)
+            write_log(f"MBM average loss at epoch {epoch}: {mbm_loss:.6f}", log_path)
+            rebuilt_ub_graph = rebuild_ub_graph_with_mbm(mbm_model, dataset, conf, device)
+            if epoch == 0:
+                print_statistics(rebuilt_ub_graph, "U-B statistics from MBM rebuild", log_path)
+            UB_propagation_graph = build_ub_propagation_graph(rebuilt_ub_graph, conf, device)
+        elif use_anchor_rebuild:
+            anchor_loss = train_anchor_epoch(anchor_model, anchor_optimizer, dataset, conf, device)
+            write_log(f"Anchor average loss at epoch {epoch}: {anchor_loss:.6f}", log_path)
+            rebuilt_ub_graph = rebuild_ub_graph_with_anchor(anchor_model, dataset, conf, device)
+            if epoch == 0:
+                print_statistics(rebuilt_ub_graph, "U-B statistics from Anchor rebuild", log_path)
+            UB_propagation_graph = build_ub_propagation_graph(rebuilt_ub_graph, conf, device)
         else:
             ######### Denoising Uer-Bundle Graph ###########
             diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].toarray()))
