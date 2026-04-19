@@ -107,7 +107,7 @@ MealRec+L:
 iFashion:
 
   # CBDM / diffusion base settings
-  use_blcc: True
+  use_blcc: False
   export_cbdm_analysis: False
 
   dims: [1000]

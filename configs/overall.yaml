@@ -5,4 +5,4 @@ batch_size_test: 2048
 topk: [10, 20]
 neg_num: 1
 lr: 1.0e-3
-test_interval: 2
+test_interval: 5
