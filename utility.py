@@ -64,6 +64,47 @@ def load_external_embedding_tensor(path, num_expected, entity_name):
     return embedding.contiguous()
 
 
+def build_weighted_cbdm_input_graph(u_b_graph, user_embeddings, bundle_embeddings, gamma, eps):
+    if not sp.isspmatrix_csr(u_b_graph):
+        u_b_graph = u_b_graph.tocsr()
+
+    if user_embeddings.ndim != 2 or bundle_embeddings.ndim != 2:
+        raise ValueError("External user and bundle embeddings must be 2D")
+    if user_embeddings.shape[1] != bundle_embeddings.shape[1]:
+        raise ValueError("User and bundle embeddings must share the same embedding dimension")
+    if user_embeddings.shape[0] != u_b_graph.shape[0]:
+        raise ValueError(
+            f"user embedding rows ({user_embeddings.shape[0]}) do not match graph users ({u_b_graph.shape[0]})"
+        )
+    if bundle_embeddings.shape[0] != u_b_graph.shape[1]:
+        raise ValueError(
+            f"bundle embedding rows ({bundle_embeddings.shape[0]}) do not match graph bundles ({u_b_graph.shape[1]})"
+        )
+
+    user_embeddings = np.asarray(user_embeddings, dtype=np.float32)
+    bundle_embeddings = np.asarray(bundle_embeddings, dtype=np.float32)
+
+    indptr = u_b_graph.indptr
+    indices = u_b_graph.indices
+    weighted_data = np.empty_like(u_b_graph.data, dtype=np.float32)
+
+    for user_id in range(u_b_graph.shape[0]):
+        start = indptr[user_id]
+        end = indptr[user_id + 1]
+        if start == end:
+            continue
+
+        bundle_ids = indices[start:end]
+        user_vec = user_embeddings[user_id]
+        bundle_vecs = bundle_embeddings[bundle_ids]
+        scores = np.sum(bundle_vecs * user_vec[None, :], axis=1)
+        mean_score = scores.mean(dtype=np.float32)
+        adjusted = 1.0 + gamma * (scores - mean_score)
+        weighted_data[start:end] = np.maximum(adjusted, eps).astype(np.float32, copy=False)
+
+    return sp.csr_matrix((weighted_data, indices.copy(), indptr.copy()), shape=u_b_graph.shape)
+
+
 class BundleTrainDataset(Dataset):
     def __init__(self, conf, u_b_pairs, u_b_graph, num_bundles, u_b_for_neg_sample, b_b_for_neg_sample, neg_sample=1):
         self.conf = conf

@@ -6,7 +6,14 @@ import numpy as np
 from tqdm import tqdm
 import scipy.sparse as sp
 import torch
-from utility import Datasets, DiffusionDataset, load_external_embedding_tensor, print_statistics, write_log
+from utility import (
+    Datasets,
+    DiffusionDataset,
+    build_weighted_cbdm_input_graph,
+    load_external_embedding_tensor,
+    print_statistics,
+    write_log,
+)
 from models.DCBR import DCBR, DNN, GaussianDiffusion
 from models.AnchorRebuilder import AnchorRebuilder
 from models.MBMRebuilder import MBMRebuilder
@@ -436,6 +443,13 @@ def main():
     use_observed_ub_rebuild_mask = conf.get("use_observed_ub_rebuild_mask", False)
     use_weight_matrix_random_subset = conf.get("use_weight_matrix_random_subset", False)
     use_weight_matrix_keep_bottomk_random_subset = conf.get("use_weight_matrix_keep_bottomk_random_subset", False)
+    use_weighted_cbdm_input = conf.get("use_weighted_cbdm_input", False)
+    cbdm_input_graph = dataset.graphs[0]
+    if use_weighted_cbdm_input and enabled_weight_matrix_branches > 0:
+        write_log(
+            "weighted CBDM input is enabled in config, but the current run uses a non-CBDM rebuild branch; the weighted input will be ignored.",
+            log_path,
+        )
     if use_weight_matrix_prune_bottomk:
         static_ub_propagation_graph = build_ub_propagation_graph(dataset.weight_matrix_pruned_ub_graph, conf, device)
         write_log("Use weight matrix bottom-k pruning rebuild: skip CBDM training and drop the lowest-weight observed U-B edges per user.", log_path)
@@ -492,6 +506,49 @@ def main():
         )
         write_log("Use Anchor rebuild: train an anchor-conditioned bundle reconstructor on external LightGCN embeddings and rebuild UB graph from observed top-k anchors.", log_path)
     else:
+        if use_weighted_cbdm_input:
+            cbdm_user_embeddings = load_external_embedding_tensor(
+                conf["weighted_cbdm_user_embedding_path"],
+                dataset.num_users,
+                "user",
+            )
+            cbdm_bundle_embeddings = load_external_embedding_tensor(
+                conf["weighted_cbdm_bundle_embedding_path"],
+                dataset.num_bundles,
+                "bundle",
+            )
+            cbdm_input_graph = build_weighted_cbdm_input_graph(
+                dataset.graphs[0],
+                cbdm_user_embeddings.cpu().numpy(),
+                cbdm_bundle_embeddings.cpu().numpy(),
+                conf["weighted_cbdm_input_gamma"],
+                conf["weighted_cbdm_input_eps"],
+            )
+            write_log(
+                "Use weighted CBDM input: observed U-B edges are reweighted by "
+                "max(eps, 1 + gamma * (dot(u, b) - user_mean_dot)) before diffusion.",
+                log_path,
+            )
+            write_log(
+                (
+                    f"Weighted CBDM input params | gamma={conf['weighted_cbdm_input_gamma']} | "
+                    f"eps={conf['weighted_cbdm_input_eps']} | "
+                    f"user_emb={conf['weighted_cbdm_user_embedding_path']} | "
+                    f"bundle_emb={conf['weighted_cbdm_bundle_embedding_path']}"
+                ),
+                log_path,
+            )
+            write_log(
+                (
+                    f"Weighted CBDM input stats | min={cbdm_input_graph.data.min():.6f} | "
+                    f"max={cbdm_input_graph.data.max():.6f} | "
+                    f"mean={cbdm_input_graph.data.mean():.6f} | "
+                    f"std={cbdm_input_graph.data.std():.6f}"
+                ),
+                log_path,
+            )
+        else:
+            write_log("Use original binary CBDM input: observed U-B edges keep value 1.", log_path)
         if use_observed_ub_rebuild_mask:
             write_log("Use observed-only CBDM rebuild: top-k is selected only from observed train U-B interactions.", log_path)
         write_log(f"CBDM BLCC enabled: {use_blcc}", log_path)
@@ -552,7 +609,7 @@ def main():
             UB_propagation_graph = build_ub_propagation_graph(rebuilt_ub_graph, conf, device)
         else:
             ######### Denoising Uer-Bundle Graph ###########
-            diffusionDataset = DiffusionDataset(torch.FloatTensor(dataset.graphs[0].toarray()))
+            diffusionDataset = DiffusionDataset(torch.FloatTensor(cbdm_input_graph.toarray()))
             diffusionLoader = torch.utils.data.DataLoader(diffusionDataset, batch_size=conf["batch_size_train"], shuffle=True, num_workers=0)
             total_steps = (diffusionDataset.__len__() + conf["batch_size_train"] - 1) // conf["batch_size_train"]
             pbar_diffusion = tqdm(enumerate(diffusionLoader), total=total_steps)

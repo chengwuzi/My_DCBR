@@ -13,6 +13,11 @@ MealRec+H:
   sampling_steps: 0
   rebuild_k: 1
   lambda_0: 1.0e+3
+  use_weighted_cbdm_input: False
+  weighted_cbdm_user_embedding_path: ''
+  weighted_cbdm_bundle_embedding_path: ''
+  weighted_cbdm_input_gamma: 1.0
+  weighted_cbdm_input_eps: 0.1
 
   # Weight-matrix experiment switches
   # Keep disabled unless running a specific ablation on external UB weights.
@@ -100,6 +105,11 @@ MealRec+L:
   sampling_steps: 0
   rebuild_k: 1
   lambda_0: 1.0e+3
+  use_weighted_cbdm_input: True
+  weighted_cbdm_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
+  weighted_cbdm_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
+  weighted_cbdm_input_gamma: 0.15
+  weighted_cbdm_input_eps: 0.1
 
   # Weight-matrix experiment switches
   # Keep disabled unless running a specific ablation on external UB weights.
@@ -189,6 +199,11 @@ iFashion:
   sampling_steps: 0
   rebuild_k: 1
   lambda_0: 2.0
+  use_weighted_cbdm_input: True
+  weighted_cbdm_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
+  weighted_cbdm_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
+  weighted_cbdm_input_gamma: 0.15
+  weighted_cbdm_input_eps: 0.1
 
   # Weight-matrix experiment switches
   # Enable at most one main branch below at a time:
@@ -233,9 +248,9 @@ iFashion:
   mbm_contribution_metric: 'context_shift'
 
   # Anchor-conditioned reconstruction rebuild on external LightGCN embeddings
-  use_anchor_rebuild: True
-  anchor_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
-  anchor_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
+  use_anchor_rebuild: False
+  anchor_user_embedding_path: ''
+  anchor_bundle_embedding_path: ''
   anchor_hidden_dim: 128
   anchor_dropout: 0.1
   anchor_encoder_layers: 2
