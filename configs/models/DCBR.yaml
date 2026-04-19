@@ -207,7 +207,7 @@ iFashion:
 
   # Weight-matrix keep-bottom-k rebuild
   # Keeps the lowest-weight observed U-B edges, with optional epoch-wise random subset sampling.
-  use_weight_matrix_keep_bottomk_rebuild: True
+  use_weight_matrix_keep_bottomk_rebuild: False
   weight_matrix_keep_bottomk_k: 8
   use_weight_matrix_keep_bottomk_random_subset: False
   weight_matrix_keep_bottomk_random_subset_min_k: 2
@@ -233,9 +233,9 @@ iFashion:
   mbm_contribution_metric: 'context_shift'
 
   # Anchor-conditioned reconstruction rebuild on external LightGCN embeddings
-  use_anchor_rebuild: False
-  anchor_user_embedding_path: ''
-  anchor_bundle_embedding_path: ''
+  use_anchor_rebuild: True
+  anchor_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
+  anchor_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
   anchor_hidden_dim: 128
   anchor_dropout: 0.1
   anchor_encoder_layers: 2
