@@ -16,6 +16,7 @@ from utility import (
 )
 from models.DCBR import DCBR, DNN, GaussianDiffusion
 from models.AnchorRebuilder import AnchorRebuilder
+from models.LatentDiffusionRebuilder import LatentDiffusionRebuilder
 from models.MBMRebuilder import MBMRebuilder
 
 
@@ -77,6 +78,35 @@ def write_cbdm_epoch_top1_matrix(file_path, top1_by_epoch, num_users, num_epochs
             for epoch in range(num_epochs):
                 row.append(str(top1_by_epoch[epoch][user_id]))
             f.write("\t".join(row) + "\n")
+
+
+def build_observed_bundle_batch(dataset, user_indices, device):
+    batch_users = np.asarray(user_indices, dtype=np.int64)
+    batch_observed = [dataset.user_observed_bundles[int(user_id)] for user_id in batch_users]
+    max_len = max(len(observed) for observed in batch_observed)
+
+    observed_indices = torch.full(
+        (len(batch_users), max_len),
+        -1,
+        dtype=torch.long,
+        device=device,
+    )
+    observed_mask = torch.zeros(
+        (len(batch_users), max_len),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    for row_idx, observed in enumerate(batch_observed):
+        observed_tensor = torch.tensor(observed, dtype=torch.long, device=device)
+        observed_indices[row_idx, :observed_tensor.shape[0]] = observed_tensor
+        observed_mask[row_idx, :observed_tensor.shape[0]] = 1.0
+
+    return {
+        "user_indices": torch.tensor(batch_users, dtype=torch.long, device=device),
+        "observed_indices": observed_indices,
+        "observed_mask": observed_mask,
+    }
 
 
 def sample_mbm_batch(dataset, user_indices, conf, device):
@@ -351,6 +381,74 @@ def rebuild_ub_graph_with_anchor(anchor_model, dataset, conf, device):
     return rebuilt_ub_graph
 
 
+def train_latent_diffusion_epoch(latent_diffusion_model, latent_diffusion_optimizer, dataset, conf, device):
+    user_order = np.random.permutation(dataset.num_users)
+    batch_size = conf["latent_diffusion_batch_size"]
+    step_num = (dataset.num_users + batch_size - 1) // batch_size
+    pbar = tqdm(range(step_num), total=step_num)
+    total_loss = 0.0
+    effective_steps = 0
+
+    latent_diffusion_model.train(True)
+    for step_idx in pbar:
+        start = step_idx * batch_size
+        end = min((step_idx + 1) * batch_size, dataset.num_users)
+        batch = build_observed_bundle_batch(dataset, user_order[start:end], device)
+
+        latent_diffusion_optimizer.zero_grad()
+        loss = latent_diffusion_model.training_loss(batch)
+        loss.backward()
+        latent_diffusion_optimizer.step()
+
+        total_loss += loss.detach().item()
+        effective_steps += 1
+        pbar.set_description(
+            f'LatentDiffusion Step: {step_idx + 1}/{step_num} | loss: {loss.detach():8.4f}'
+        )
+
+    return total_loss / max(effective_steps, 1)
+
+
+def rebuild_ub_graph_with_latent_diffusion(latent_diffusion_model, dataset, conf, device):
+    batch_size = conf["latent_diffusion_infer_batch_size"]
+    rebuild_k = conf["rebuild_k"]
+    user_indices = np.arange(dataset.num_users)
+    u_list = []
+    b_list = []
+    edge_list = []
+
+    latent_diffusion_model.eval()
+    with torch.no_grad():
+        for start in tqdm(range(0, dataset.num_users, batch_size), desc="LatentDiffusion Rebuild"):
+            end = min(start + batch_size, dataset.num_users)
+            batch = build_observed_bundle_batch(dataset, user_indices[start:end], device)
+            selected_bundles, selected_valid = latent_diffusion_model.rebuild_topk(
+                batch["user_indices"],
+                batch["observed_indices"],
+                rebuild_k=rebuild_k,
+            )
+
+            selected_bundles = selected_bundles.cpu().numpy()
+            selected_valid = selected_valid.cpu().numpy()
+            batch_users = batch["user_indices"].cpu().numpy()
+            for row_idx, user_id in enumerate(batch_users):
+                for col_idx in range(selected_bundles.shape[1]):
+                    if not selected_valid[row_idx, col_idx]:
+                        continue
+                    u_list.append(int(user_id))
+                    b_list.append(int(selected_bundles[row_idx, col_idx]))
+                    edge_list.append(1.0)
+
+    rebuilt_ub_graph = sp.coo_matrix(
+        (
+            np.array(edge_list, dtype=np.float32),
+            (np.array(u_list, dtype=np.int32), np.array(b_list, dtype=np.int32)),
+        ),
+        shape=(dataset.num_users, dataset.num_bundles),
+    ).tocsr()
+    return rebuilt_ub_graph
+
+
 def main():
     paras = get_cmd().__dict__
     set_seed(paras["seed"])
@@ -412,6 +510,7 @@ def main():
     use_weight_matrix_keep_bottomk_rebuild = conf.get("use_weight_matrix_keep_bottomk_rebuild", False)
     use_mbm_rebuild = conf.get("use_mbm_rebuild", False)
     use_anchor_rebuild = conf.get("use_anchor_rebuild", False)
+    use_latent_diffusion_rebuild = conf.get("use_latent_diffusion_rebuild", False)
 
     enabled_weight_matrix_branches = sum(
         int(flag)
@@ -421,13 +520,15 @@ def main():
             use_weight_matrix_keep_bottomk_rebuild,
             use_mbm_rebuild,
             use_anchor_rebuild,
+            use_latent_diffusion_rebuild,
         )
     )
     if enabled_weight_matrix_branches > 1:
         raise ValueError(
             "Only one rebuild main branch can be enabled at a time: "
             "use_weight_matrix_rebuild, use_weight_matrix_prune_bottomk, "
-            "use_weight_matrix_keep_bottomk_rebuild, use_mbm_rebuild, use_anchor_rebuild"
+            "use_weight_matrix_keep_bottomk_rebuild, use_mbm_rebuild, "
+            "use_anchor_rebuild, use_latent_diffusion_rebuild"
         )
 
     denoise_model = None
@@ -437,6 +538,8 @@ def main():
     mbm_optimizer = None
     anchor_model = None
     anchor_optimizer = None
+    latent_diffusion_model = None
+    latent_diffusion_optimizer = None
     static_ub_propagation_graph = None
     use_blcc = conf.get("use_blcc", True)
     export_cbdm_analysis = conf.get("export_cbdm_analysis", False)
@@ -505,6 +608,33 @@ def main():
             weight_decay=conf["anchor_weight_decay"],
         )
         write_log("Use Anchor rebuild: train an anchor-conditioned bundle reconstructor on external LightGCN embeddings and rebuild UB graph from observed top-k anchors.", log_path)
+    elif use_latent_diffusion_rebuild:
+        user_embedding_tensor = load_external_embedding_tensor(
+            conf["latent_diffusion_user_embedding_path"],
+            dataset.num_users,
+            "user",
+        )
+        bundle_embedding_tensor = load_external_embedding_tensor(
+            conf["latent_diffusion_bundle_embedding_path"],
+            dataset.num_bundles,
+            "bundle",
+        )
+        if user_embedding_tensor.shape[1] != bundle_embedding_tensor.shape[1]:
+            raise ValueError("Latent diffusion user and bundle embeddings must share the same dimension")
+        latent_diffusion_model = LatentDiffusionRebuilder(
+            conf,
+            user_embedding_tensor.to(device),
+            bundle_embedding_tensor.to(device),
+        ).to(device)
+        latent_diffusion_optimizer = torch.optim.Adam(
+            latent_diffusion_model.parameters(),
+            lr=conf["latent_diffusion_lr"],
+            weight_decay=conf["latent_diffusion_weight_decay"],
+        )
+        write_log(
+            "Use latent diffusion rebuild: train a shared latent denoiser on observed bundle-set embeddings and rebuild UB graph from observed top-k anchor matches.",
+            log_path,
+        )
     else:
         if use_weighted_cbdm_input:
             cbdm_user_embeddings = load_external_embedding_tensor(
@@ -566,6 +696,7 @@ def main():
         or use_weight_matrix_keep_bottomk_rebuild
         or use_mbm_rebuild
         or use_anchor_rebuild
+        or use_latent_diffusion_rebuild
     ):
         write_log("CBDM analysis export requested, but CBDM is skipped by the current non-CBDM rebuild branch. Export will be ignored.", log_path)
         export_cbdm_analysis = False
@@ -606,6 +737,19 @@ def main():
             rebuilt_ub_graph = rebuild_ub_graph_with_anchor(anchor_model, dataset, conf, device)
             if epoch == 0:
                 print_statistics(rebuilt_ub_graph, "U-B statistics from Anchor rebuild", log_path)
+            UB_propagation_graph = build_ub_propagation_graph(rebuilt_ub_graph, conf, device)
+        elif use_latent_diffusion_rebuild:
+            latent_diffusion_loss = train_latent_diffusion_epoch(
+                latent_diffusion_model,
+                latent_diffusion_optimizer,
+                dataset,
+                conf,
+                device,
+            )
+            write_log(f"Latent diffusion average loss at epoch {epoch}: {latent_diffusion_loss:.6f}", log_path)
+            rebuilt_ub_graph = rebuild_ub_graph_with_latent_diffusion(latent_diffusion_model, dataset, conf, device)
+            if epoch == 0:
+                print_statistics(rebuilt_ub_graph, "U-B statistics from Latent diffusion rebuild", log_path)
             UB_propagation_graph = build_ub_propagation_graph(rebuilt_ub_graph, conf, device)
         else:
             ######### Denoising Uer-Bundle Graph ###########

@@ -72,6 +72,23 @@ MealRec+H:
   anchor_infer_batch_size: 256
   anchor_eval_chunk_size: 16
 
+  # Set-conditioned latent diffusion rebuild on external LightGCN embeddings
+  use_latent_diffusion_rebuild: False
+  latent_diffusion_user_embedding_path: ''
+  latent_diffusion_bundle_embedding_path: ''
+  latent_diffusion_hidden_dim: 128
+  latent_diffusion_time_dim: 16
+  latent_diffusion_denoiser_layers: 2
+  latent_diffusion_dropout: 0.1
+  latent_diffusion_num_steps: 6
+  latent_diffusion_beta_start: 1.0e-4
+  latent_diffusion_beta_end: 0.02
+  latent_diffusion_set_loss_weight: 0.2
+  latent_diffusion_lr: 1.0e-3
+  latent_diffusion_weight_decay: 1.0e-5
+  latent_diffusion_batch_size: 1024
+  latent_diffusion_infer_batch_size: 256
+
   # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.0
@@ -105,10 +122,10 @@ MealRec+L:
   sampling_steps: 0
   rebuild_k: 1
   lambda_0: 1.0e+3
-  use_weighted_cbdm_input: True
-  weighted_cbdm_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
-  weighted_cbdm_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
-  weighted_cbdm_input_gamma: 0.15
+  use_weighted_cbdm_input: False
+  weighted_cbdm_user_embedding_path: ''
+  weighted_cbdm_bundle_embedding_path: ''
+  weighted_cbdm_input_gamma: 1.0
   weighted_cbdm_input_eps: 0.1
 
   # Weight-matrix experiment switches
@@ -164,6 +181,23 @@ MealRec+L:
   anchor_infer_batch_size: 256
   anchor_eval_chunk_size: 16
 
+  # Set-conditioned latent diffusion rebuild on external LightGCN embeddings
+  use_latent_diffusion_rebuild: False
+  latent_diffusion_user_embedding_path: ''
+  latent_diffusion_bundle_embedding_path: ''
+  latent_diffusion_hidden_dim: 128
+  latent_diffusion_time_dim: 16
+  latent_diffusion_denoiser_layers: 2
+  latent_diffusion_dropout: 0.1
+  latent_diffusion_num_steps: 6
+  latent_diffusion_beta_start: 1.0e-4
+  latent_diffusion_beta_end: 0.02
+  latent_diffusion_set_loss_weight: 0.2
+  latent_diffusion_lr: 1.0e-3
+  latent_diffusion_weight_decay: 1.0e-5
+  latent_diffusion_batch_size: 1024
+  latent_diffusion_infer_batch_size: 256
+
   # DCBR encoder / objective settings
   num_layers: 2
   upsilon_UB: 0.05
@@ -199,10 +233,10 @@ iFashion:
   sampling_steps: 0
   rebuild_k: 1
   lambda_0: 2.0
-  use_weighted_cbdm_input: True
-  weighted_cbdm_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
-  weighted_cbdm_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
-  weighted_cbdm_input_gamma: 0.15
+  use_weighted_cbdm_input: False
+  weighted_cbdm_user_embedding_path: ''
+  weighted_cbdm_bundle_embedding_path: ''
+  weighted_cbdm_input_gamma: 1.0
   weighted_cbdm_input_eps: 0.1
 
   # Weight-matrix experiment switches
@@ -261,6 +295,23 @@ iFashion:
   anchor_batch_size: 1024
   anchor_infer_batch_size: 256
   anchor_eval_chunk_size: 16
+
+  # Set-conditioned latent diffusion rebuild on external LightGCN embeddings
+  use_latent_diffusion_rebuild: True
+  latent_diffusion_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
+  latent_diffusion_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
+  latent_diffusion_hidden_dim: 128
+  latent_diffusion_time_dim: 16
+  latent_diffusion_denoiser_layers: 2
+  latent_diffusion_dropout: 0.1
+  latent_diffusion_num_steps: 6
+  latent_diffusion_beta_start: 1.0e-4
+  latent_diffusion_beta_end: 0.02
+  latent_diffusion_set_loss_weight: 0.2
+  latent_diffusion_lr: 1.0e-3
+  latent_diffusion_weight_decay: 1.0e-5
+  latent_diffusion_batch_size: 1024
+  latent_diffusion_infer_batch_size: 256
 
   # DCBR encoder / objective settings
   num_layers: 2
