@@ -22,6 +22,11 @@ class MLP(nn.Module):
             [nn.Linear(dims[i], dims[i + 1]) for i in range(len(dims) - 1)]
         )
         self.dropout = nn.Dropout(dropout)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for layer in self.layers:
+            layer.reset_parameters()
 
     def forward(self, x):
         for idx, layer in enumerate(self.layers):
@@ -75,6 +80,9 @@ class LatentDiffusionRebuilder(nn.Module):
             "sqrt_one_minus_alphas_cumprod",
             torch.sqrt(torch.clamp(1.0 - alphas_cumprod, min=1.0e-8)),
         )
+
+    def reset_parameters(self):
+        self.denoiser.reset_parameters()
 
     def _time_embedding(self, timesteps):
         device = timesteps.device

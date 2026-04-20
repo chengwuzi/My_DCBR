@@ -449,6 +449,31 @@ def rebuild_ub_graph_with_latent_diffusion(latent_diffusion_model, dataset, conf
     return rebuilt_ub_graph
 
 
+def create_latent_diffusion_rebuilder(conf, user_embedding_tensor, bundle_embedding_tensor, device):
+    latent_diffusion_model = LatentDiffusionRebuilder(
+        conf,
+        user_embedding_tensor.to(device),
+        bundle_embedding_tensor.to(device),
+    ).to(device)
+    latent_diffusion_optimizer = torch.optim.Adam(
+        latent_diffusion_model.parameters(),
+        lr=conf["latent_diffusion_lr"],
+        weight_decay=conf["latent_diffusion_weight_decay"],
+    )
+    return latent_diffusion_model, latent_diffusion_optimizer
+
+
+def reset_latent_diffusion_rebuilder(conf, latent_diffusion_model, latent_diffusion_optimizer):
+    latent_diffusion_model.reset_parameters()
+    if conf.get("latent_diffusion_reset_optimizer", True):
+        latent_diffusion_optimizer = torch.optim.Adam(
+            latent_diffusion_model.parameters(),
+            lr=conf["latent_diffusion_lr"],
+            weight_decay=conf["latent_diffusion_weight_decay"],
+        )
+    return latent_diffusion_model, latent_diffusion_optimizer
+
+
 def main():
     paras = get_cmd().__dict__
     set_seed(paras["seed"])
@@ -540,6 +565,8 @@ def main():
     anchor_optimizer = None
     latent_diffusion_model = None
     latent_diffusion_optimizer = None
+    latent_diffusion_user_embedding_tensor = None
+    latent_diffusion_bundle_embedding_tensor = None
     static_ub_propagation_graph = None
     use_blcc = conf.get("use_blcc", True)
     export_cbdm_analysis = conf.get("export_cbdm_analysis", False)
@@ -609,27 +636,23 @@ def main():
         )
         write_log("Use Anchor rebuild: train an anchor-conditioned bundle reconstructor on external LightGCN embeddings and rebuild UB graph from observed top-k anchors.", log_path)
     elif use_latent_diffusion_rebuild:
-        user_embedding_tensor = load_external_embedding_tensor(
+        latent_diffusion_user_embedding_tensor = load_external_embedding_tensor(
             conf["latent_diffusion_user_embedding_path"],
             dataset.num_users,
             "user",
         )
-        bundle_embedding_tensor = load_external_embedding_tensor(
+        latent_diffusion_bundle_embedding_tensor = load_external_embedding_tensor(
             conf["latent_diffusion_bundle_embedding_path"],
             dataset.num_bundles,
             "bundle",
         )
-        if user_embedding_tensor.shape[1] != bundle_embedding_tensor.shape[1]:
+        if latent_diffusion_user_embedding_tensor.shape[1] != latent_diffusion_bundle_embedding_tensor.shape[1]:
             raise ValueError("Latent diffusion user and bundle embeddings must share the same dimension")
-        latent_diffusion_model = LatentDiffusionRebuilder(
+        latent_diffusion_model, latent_diffusion_optimizer = create_latent_diffusion_rebuilder(
             conf,
-            user_embedding_tensor.to(device),
-            bundle_embedding_tensor.to(device),
-        ).to(device)
-        latent_diffusion_optimizer = torch.optim.Adam(
-            latent_diffusion_model.parameters(),
-            lr=conf["latent_diffusion_lr"],
-            weight_decay=conf["latent_diffusion_weight_decay"],
+            latent_diffusion_user_embedding_tensor,
+            latent_diffusion_bundle_embedding_tensor,
+            device,
         )
         write_log(
             "Use latent diffusion rebuild: train a shared latent denoiser on observed bundle-set embeddings and rebuild UB graph from observed top-k anchor matches.",
@@ -710,6 +733,24 @@ def main():
     cbdm_epoch_top1_by_epoch = {}
     cbdm_final_ranking_lines = []
     for epoch in range(conf['epochs']):
+        if (
+            use_latent_diffusion_rebuild
+            and conf.get("latent_diffusion_reset_after_epoch", -1) >= 0
+            and epoch == conf["latent_diffusion_reset_after_epoch"] + 1
+        ):
+            latent_diffusion_model, latent_diffusion_optimizer = reset_latent_diffusion_rebuilder(
+                conf,
+                latent_diffusion_model,
+                latent_diffusion_optimizer,
+            )
+            write_log(
+                (
+                    "Latent diffusion rebuild reset triggered after epoch "
+                    f"{conf['latent_diffusion_reset_after_epoch']}: reinitialized the latent top-k selector"
+                    + (" and optimizer." if conf.get("latent_diffusion_reset_optimizer", True) else ".")
+                ),
+                log_path,
+            )
         if use_weight_matrix_prune_bottomk:
             UB_propagation_graph = static_ub_propagation_graph
         elif use_weight_matrix_keep_bottomk_rebuild:

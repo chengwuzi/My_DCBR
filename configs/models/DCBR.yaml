@@ -88,6 +88,8 @@ MealRec+H:
   latent_diffusion_weight_decay: 1.0e-5
   latent_diffusion_batch_size: 1024
   latent_diffusion_infer_batch_size: 256
+  latent_diffusion_reset_after_epoch: -1
+  latent_diffusion_reset_optimizer: True
 
   # DCBR encoder / objective settings
   num_layers: 2
@@ -197,6 +199,8 @@ MealRec+L:
   latent_diffusion_weight_decay: 1.0e-5
   latent_diffusion_batch_size: 1024
   latent_diffusion_infer_batch_size: 256
+  latent_diffusion_reset_after_epoch: -1
+  latent_diffusion_reset_optimizer: True
 
   # DCBR encoder / objective settings
   num_layers: 2
@@ -312,6 +316,8 @@ iFashion:
   latent_diffusion_weight_decay: 1.0e-5
   latent_diffusion_batch_size: 1024
   latent_diffusion_infer_batch_size: 256
+  latent_diffusion_reset_after_epoch: -1
+  latent_diffusion_reset_optimizer: True
 
   # DCBR encoder / objective settings
   num_layers: 2
