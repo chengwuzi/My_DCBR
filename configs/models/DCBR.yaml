@@ -308,16 +308,16 @@ iFashion:
   latent_diffusion_time_dim: 16
   latent_diffusion_denoiser_layers: 2
   latent_diffusion_dropout: 0.1
-  latent_diffusion_num_steps: 6
+  latent_diffusion_num_steps: 12
   latent_diffusion_beta_start: 1.0e-4
   latent_diffusion_beta_end: 0.02
-  latent_diffusion_set_loss_weight: 0.2
+  latent_diffusion_set_loss_weight: 0.05
   latent_diffusion_lr: 1.0e-3
   latent_diffusion_weight_decay: 1.0e-5
   latent_diffusion_batch_size: 1024
   latent_diffusion_infer_batch_size: 256
   latent_diffusion_reset_after_epoch: -1
-  latent_diffusion_reset_optimizer: True
+  latent_diffusion_reset_optimizer: False
 
   # DCBR encoder / objective settings
   num_layers: 2
