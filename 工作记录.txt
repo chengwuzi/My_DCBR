@@ -1,150 +1,369 @@
 My_DCBR 工作记录
-主题：围绕“如何利用 BOD 导出的权重矩阵替代/逼近 CBDM 的 top1 选择，从而获得 DCBR 的指标增益”开展的整条研究与开发线
 
-一、项目与问题背景
-1. 当前主要只关注 iFashion 数据集。
-2. 原始 DCBR 在训练时会先训练 CBDM 扩散模型，再根据 CBDM 对 U-B 交互的打分选择 top1，构造新的 UB 图进入后续训练。
-3. 研究目标是：尝试用已有的 BOD 导出权重矩阵 iFashion_UB.txt 替代或逼近 CBDM 的 top1 选择逻辑，减少 CBDM 的训练开销，同时尽量保住 DCBR 相对 MultiCBR 的指标涨点。
+主题：
+围绕 iFashion 数据集，研究如何平替或逼近 DCBR 中 CBDM 带来的指标涨点增益。
 
-二、权重矩阵文件的基本事实
-1. 目录：weightMatrix/
-2. 关键文件：
-   - iFashion_UB.txt：BOD 导出的训练集 observed U-B 边权重文件
-   - UB_WEIGHT_MATRIX_HANDOFF.txt：交接说明
-   - BOD相关文件/：BOD 的相关训练与导出代码
-3. 已核实事实：
-   - iFashion_UB.txt 不是稠密矩阵，而是 observed train U-B edge list
-   - 行数 1213676，与 datasets/iFashion/user_bundle_train.txt 的边数完全一致
-   - 前两列 (user_id, bundle_id) 与 train U-B 边全量一一对应
-   - 用户范围 0..53896，bundle 范围 0..27693
-4. iFashion 训练集用户 bundle 交互统计：
-   - 用户数：53897
-   - 训练边数：1213676
-   - 平均每用户 22.5184 条
-   - 中位数 19
-   - p10=14, p20=15, p30=16, p40=18, p50=19, p60=21, p70=22, p80=26, p90=34
-   - 最小 14，最大 406
 
-三、代码层面的关键理解
-1. 原始 DCBR 的 UB 图只影响训练期的 UB view / contrastive 支路，测试时最终 user/bundle 表示主要来自 UI + BI 融合。
-2. BPR 训练仍然使用完整训练集正样本，不会因为 UB 重建图变 sparse 就只剩少量监督。
-3. 因此 CBDM top1 更像“训练期的结构锚点”，不是最终推荐 top1。
-4. 实验已经证明 use_observed_ub_rebuild_mask 打开后和原始 DCBR 几乎没差，说明 CBDM 的 top1 大多数本来就在 observed train U-B 边里。
+一、项目当前核心结论
 
-四、已经完成的代码改造
-1. use_weight_matrix_rebuild
-   - 作用：跳过 CBDM，直接按权重矩阵为每个用户保留 topk 条边，构造静态 UB 图
-   - 可选 use_weight_matrix_random_subset：每个 epoch 从正向 topk 候选中随机采样子集
-2. use_observed_ub_rebuild_mask
-   - 作用：CBDM 路径下，只允许从真实 observed train U-B 中选 topk
-3. use_weight_matrix_prune_bottomk
-   - 作用：跳过 CBDM，对每个用户删除最低权重的 k 条 observed U-B，剩余边构造静态 UB 图
-4. use_blcc
-   - 作用：控制 BLCC 开关，默认开；关闭时 CBDM 退化为只使用交互进行扩散去噪
-5. export_cbdm_analysis
-   - 作用：在原始 CBDM 路径下导出分析文件
-   - 导出文件：
-     - 最后一轮 observed U-B 排序文件
-     - 每个用户每个 epoch 的 top1 宽表
-6. use_weight_matrix_keep_bottomk_rebuild
-   - 作用：跳过 CBDM，按权重矩阵为每个用户保留倒数 topk 条边，构造静态 UB 图
-   - 可选 use_weight_matrix_keep_bottomk_random_subset：每个 epoch 从倒数 topk 候选中随机采样子集
-7. 配置文件 configs/models/DCBR.yaml 已按块整理，并为新功能加了注释；新配置块已经单独隔开。
+1. 当前项目后续工作只关注 iFashion。
 
-五、CBDM 分析导出与统计脚本
-1. 导出的分析文件位于 weightMatrix/：
-   - DCBR-iFashion-noBLCC_observed_analysis-cbdm-final-observed-ranking.txt
-   - DCBR-iFashion-noBLCC_observed_analysis-cbdm-epoch-top1.txt
-2. 已开发的统计脚本：
-   - analyze_cbdm_weight_matrix.py
-     用途：总体比较 CBDM 排序与 BOD 权重矩阵排序、top1 动态变化等
-   - analyze_top1_rank_position.py
-     用途：统计 CBDM top1 在 BOD 权重矩阵中的排名与百分比位置
-   - analyze_top1_set_bottomk_overlap.py
-     用途：统计“每个用户所有出现过的 CBDM top1 集合”与 BOD 倒数 topk 的重合度
-   - analyze_top1_percentile_dynamics.py
-     用途：统计 CBDM top1 在 BOD 排序中的百分位区间分布，以及早中晚阶段差异
+2. 原始 DCBR 的关键收益来源，越来越不像只是“选中了某条更好的 top1 边”，而更像：
+   - 共享的全局去噪器
+   - 对所有用户进行结构性动态重排
+   - 训练期持续生成动态 UB 教师图
 
-六、关键统计结论（非常重要）
-1. 无 BLCC 的 CBDM 最终排序，与 BOD 权重矩阵排序整体呈明显反向关系
-   - final_top1_exact_match_pct ≈ 1.857%
-   - mean_spearman ≈ -0.4617
-   - 如果把 BOD 排序反过来，相关性会变成正向
-2. CBDM 最终 top1 在 BOD 排序里的位置明显靠后
-   - final epoch mean rank ≈ 17.4181
-   - final epoch median rank = 16
-   - final epoch mean percentile ≈ 77.64%
-   - final epoch median percentile ≈ 88.00%
-3. CBDM top1 并不是只偏爱“倒数第 1 或第 2”，而是更偏爱 BOD 排序的后段区域
-4. 按百分位理解：
-   - 全 30 个 epoch 合起来：
-     - 平均位置 ≈ 78.18%
-     - 中位数位置 ≈ 88.89%
-   - 主要覆盖区间：
-     - 80%-100% 覆盖 ≈ 63.45%
-     - 85%-100% 覆盖 ≈ 57.32%
-     - 90%-100% 覆盖 ≈ 47.82%
-5. 早期与后期的差别：
-   - 早期 epoch_0_4 更偏极端尾部
-   - 后期 epoch_15_29 仍然明显偏后段，但相对稍微往前回收一点
-   - 变化幅度不算特别大，是“轻微回收”，不是彻底换风格
-6. CBDM top1 在 epoch 间变化非常明显，不是固定的
-   - 平均每个用户出现过约 3.93 个不同 top1
-   - 只有约 3.94% 用户 30 个 epoch 都不变
-   - 相邻 epoch 的 top1 变化率大约在 26.67% 到 58.21% 之间
-   - 说明 CBDM 的价值之一，很可能是“动态结构锚点”
+3. 已经有很强证据表明：
+   - 我们目前各种替代方案已经能学到 U-B 交互的质量高低
+   - 这也是为什么很多方案在 epoch4 第一次评估时效果异常好
+   - 但大多数方案会在 epoch9 左右见顶，然后快速过拟合回落
+   - 原始 CBDM 则能一直涨到 epoch20+，后期涨幅变小但仍持续刷新
 
-七、关于 BOD 权重语义的当前理解
-1. 从 BOD 代码看，导出时没有对权重做显式翻转，generator 输出直接写入文件。
-2. generator 输出不仅用于 weighted BPR，也用于 weighted alignment。
-3. BOD 里的这个数更像“训练梯度调节系数 / meta-weight”，而不是朴素的“边重要性分数”。
-4. 因此不能简单把“数值越大”理解为“越接近 CBDM 会选中的边”。
-5. 实证上，越接近 CBDM 偏好的，反而是 BOD 排序后段/小值区域。
+4. 因此，当前最重要的判断是：
+   - 问题不主要是“有没有学到边质量”
+   - 而是“如何让结构教师图在 epoch9 之后仍然保持高质量、共享的、结构性的动态变化”
 
-八、实验结果的阶段性结论
-1. 原始 DCBR 最强，当前仍未被权重矩阵方案追平。
-2. use_observed_ub_rebuild_mask 与原始 DCBR 几乎无差，说明 DCBR 增益不是靠挖出大量未观测边。
-3. 正向权重矩阵保留 topk：
-   - 可以带来一定提升，但明显弱于 DCBR
-   - 并且通常在 epoch 9 左右早熟，后面开始掉
-4. 正向 topk + 随机采样：
-   - 效果通常比静态正向 topk 更差
-5. prune_bottomk（删除低权重边）：
-   - 效果与正向 topk 相近，没有突破
-6. 保留倒数 topk：
-   - 是目前所有权重矩阵利用方式里表现最好的一条
-   - 比正向 topk、随机采样、prune_bottomk 更接近原始 DCBR
-   - 但目前也基本触到瓶颈，仍未追平原始 DCBR
-7. 当前阶段性排序可粗略理解为：
-   - 原始 DCBR
-   - 保留倒数 topk
-   - 正向 topk / prune_bottomk
-   - 随机采样版本
 
-九、为什么“保留倒数 topk”这条线目前也到瓶颈
-1. 它复刻了 CBDM 偏好的“后段候选区域”，但没有复刻 CBDM 的“动态选择机制”。
-2. CBDM 不是静态地盯着某个固定边，而是在训练过程中持续变化 top1。
-3. 因此即使倒数 topk 方向对了，静态 UB 图也只能逼近一部分机制。
-4. 当前判断：这条线已证明方向有效，但继续只做静态倒数 topk，收益上限大概率有限。
+二、原始 DCBR / CBDM 训练逻辑的关键理解
 
-十、当前结论与后续建议
-1. 当前这条“利用 BOD 权重矩阵替代 CBDM top1”的线，已经做了比较充分的探索。
-2. 已经确认：
-   - 正向 topk 方向不对
-   - 倒数后段方向更接近 CBDM
-   - CBDM 的 top1 具有明显的动态性
-3. 当前最合理的阶段性结论：
-   - BOD 权重矩阵的小值/后段更接近 CBDM 会选中的结构边
-   - 但单靠静态权重矩阵筛边，无法完整复刻 DCBR 的增益
-4. 这条线目前建议先搁置，不继续做新的“百分比区间保留”等开发。
-5. 如果后续重新拾起这条线，最重要的切入点不是继续硬调静态 topk，而应优先考虑：
-   - 如何引入“区域内动态选择”
-   - 如何让权重矩阵与当前训练状态发生耦合
-   - 而不是继续单纯扩大或缩小静态候选池
+1. 原始 DCBR 训练时：
+   - 先训练 CBDM
+   - 再用 CBDM 输出重建 UB 图
+   - 再用该 UB 图参与 DCBR 主干训练
 
-十一、接手时最需要记住的事
-1. 这条线的核心不是“BOD 权重大还是小”，而是“BOD 排序后段更接近无 BLCC 的 CBDM 偏好”。
-2. CBDM top1 不是固定的，是强动态变化的。
-3. 原始 DCBR 的优势很可能来自“动态结构锚点”，而不只是“选中了哪条边”。
-4. 目前最有效的权重矩阵利用方式是保留倒数 topk，但已经基本到达瓶颈。
+2. 原始 CBDM 在本项目中的作用更像：
+   - 训练期结构教师图生成器
+   - 而不是测试时直接负责最终召回
 
+3. 测试阶段最终 user/bundle 表示主要来自 UI + BI 融合，UB 重建图不直接参与最终测试打分。
+   这点在代码里已经核实：
+   - train.py 里的 test() 调用 model.propagate(test=True)
+   - DCBR.propagate(test=True) 返回的是 UI + BI 融合结果，不走 UB 图分支
+
+4. use_observed_ub_rebuild_mask 的作用只是：
+   - 在 CBDM 输出分数后，只允许从 observed train U-B 中选 topk
+   - 它不改变 CBDM 本身在整行空间中的建模训练
+
+5. BLCC 在 iFashion 上已经被消融实验验证影响极小，因此当前研究可以视为：
+   - 重点研究 no-BLCC 情况下 CBDM 的核心机制
+
+6. DCBR 主干训练本身一直存在图传播噪声正则：
+   - UB/UI/BI 传播和聚合阶段都可加随机噪声
+   - 所有方案都共享这部分机制
+   - 因此它不能解释“为什么只有原始 CBDM 能持续涨到 epoch20+”
+
+
+三、CBDM 选 top1 的统计结论
+
+数据来源：
+weightMatrix/DCBR-iFashion-noBLCC_observed_analysis-cbdm-epoch-top1.txt
+
+1. 全训练阶段相邻 epoch 的 top1 变化情况：
+   - 平均每个 epoch 约有 22416 个用户会更换 top1
+   - 占全部用户约 41.6%
+
+2. 后 10 个 epoch（20~29）：
+   - 平均每个 epoch 约有 24268 个用户会更换 top1
+   - 占全部用户约 45.0%
+
+3. epoch 9~20 这个阶段更值得研究：
+   - 平均每个 epoch 约有 48.26% 的用户会换 top1
+   - 平均仍有约 11.45% 的用户会出现“之前没出现过的新 top1”
+   - 这说明 9~20 期间不是简单微调，而仍然存在持续探索和重排
+
+4. 后 10 个 epoch 中，每个用户的 top1 不是乱跳，而是在小候选池中切换：
+   - 平均每用户只涉及 2.87 个不同候选
+   - 中位数为 3
+   - 43.21% 的用户只在 1~2 个候选中切换
+   - 72.15% 的用户只在 1~3 个候选中切换
+
+5. 结论：
+   - CBDM 后期并没有静止
+   - 但也不是无规律乱跳
+   - 它更像是：先收缩到一个高质量候选池，再在这个候选池里持续进行共享的结构性动态重排
+
+
+四、对 BOD 权重矩阵的研究结论
+
+1. 文件：
+   - weightMatrix/iFashion_UB.txt
+
+2. 这不是 dense matrix，而是 observed train U-B edge list，每行是：
+   - user_id bundle_id weight
+
+3. 已确认：
+   - 行数与 datasets/iFashion/user_bundle_train.txt 完全一致
+   - 即它覆盖的是训练集 observed U-B 边
+
+4. CBDM 选出的 top1 在 BOD 权重排序里的分布结论：
+   - 整体明显偏向 BOD 排序后段
+   - 但并不是永远等于倒数第 1 条
+   - 更像是在后段一小片高质量候选区里动态游走
+
+5. 已有的重要认识：
+   - BOD 权重矩阵学到的不是“CBDM top1 的精确坐标”
+   - 而是“CBDM 更可能出现的候选区域”
+
+
+五、已经做过并验证过的方案
+
+1. 静态 weight matrix 重建
+   - use_weight_matrix_rebuild
+   - use_weight_matrix_keep_bottomk_rebuild
+   - use_weight_matrix_prune_bottomk
+   结论：
+   - keep-bottomk 是目前静态方案里最强的
+   - 但静态图会在 epoch9 左右很快吃完收益，然后快速回落
+
+2. bottom-k 上加噪声 / 加随机
+   - 调大 upsilon_UB 没有效果，甚至下降
+   - 在 bottom8 候选池内做随机选择，也没能复现 CBDM 的结构性变化
+   结论：
+   - CBDM 的换 top1 不是随机换
+   - 而是共享全局去噪器驱动的结构性换边
+
+3. MBMRebuilder
+   - 文件：models/MBMRebuilder.py
+   - 思路：masked bundle modeling + DeepSets
+   结论：
+   - 可以学到集合结构
+   - 但更像“集合恢复器”，不是最贴近 CBDM top1 的机制
+
+4. AnchorRebuilder
+   - 文件：models/AnchorRebuilder.py
+   - 思路：显式 anchor-conditioned reconstruction
+   结论：
+   - 比 MBM 更贴近“结构锚点选择”
+   - 但仍然没能吃透 CBDM 的完整涨点
+
+5. Weighted CBDM input
+   - 开关：use_weighted_cbdm_input
+   - 思路：保留原始 CBDM，只把 observed U-B 输入从 1 改为
+     x(u,b)=max(eps, 1+gamma*(dot(u,b)-mean_u))
+   - 其中 dot 为外部 LightGCN 的 raw dot product，mean_u 为用户自己的 observed 均值
+   结论：
+   - 方向合理
+   - 但当前主线更值得继续压在 latent diffusion 上
+
+
+六、当前最重要的主线：Latent Diffusion Rebuild
+
+1. 核心目标
+   - 用一个和 CBDM 形式不同的共享 latent diffusion 模块
+   - 去平替 CBDM 的训练期 UB 动态教师图作用
+   - 尽量保住 DCBR 的涨点增益
+
+2. 与 CBDM 的区别
+   - CBDM：在原始 UB 交互矩阵空间做扩散，输出整行 bundle 分数
+   - Latent Diffusion：在 latent 空间做扩散，输出理想结构锚点 latent，再回到 observed bundles 里匹配 topk
+
+3. Latent v1 当前实现
+   - 文件：models/LatentDiffusionRebuilder.py
+   - 训练接入：train.py
+   - 外部 embedding：
+     - weightMatrix/ifashion_gcn_emb/user_emb.pt
+     - weightMatrix/ifashion_gcn_emb/bundle_emb.pt
+   - 设计：
+     - 冻结外部 LightGCN 的 u_embed / b_embed
+     - 用 observed bundles 的 mean pooling 得到 z_u^0
+     - 用共享 denoiser 在 latent 空间做去噪
+     - 训练目标为：
+       L = L_diff + latent_diffusion_set_loss_weight * L_set
+     - 推理时用 z_u^* 与 observed bundle embeddings 做 cosine 匹配，选 topk
+
+4. 目前对 latent v1 的理解
+   - 它已经证明了“共享全局 latent diffusion 重排器”这个大方向是有效的
+   - 但 v1 更像一个“单中心 latent 修正器”
+   - 不如原始 CBDM 那么像“高维全空间、长链条的共享去噪重排器”
+
+
+七、Latent Diffusion v1 的关键实验结果
+
+实验设定逐步演进：
+
+1. latent_diffusion_set_loss_weight=0.2, step=6, lr=1e-3
+   - epoch4 test:  R@20=0.1089, N@20=0.0980
+   - epoch9 test:  R@20=0.1425, N@20=0.1234
+   - epoch14 test: R@20=0.1310, N@20=0.1099
+   - epoch19 test: R@20=0.1316, N@20=0.1096
+   结论：
+   - 前期很强
+   - 第二次评估后迅速塌掉
+
+2. latent_diffusion_set_loss_weight=0.05, step=6, lr=1e-3
+   - epoch14 test: R@20=0.1464, N@20=0.1229
+   结论：
+   - set_loss 调小有帮助
+   - 但不是根本性突破
+
+3. latent_diffusion_set_loss_weight=0.05, step=12, lr=1e-3
+   - epoch4 test:  R@20=0.1089, N@20=0.0978
+   - epoch9 test:  R@20=0.1429, N@20=0.1237
+   - epoch14 test: R@20=0.1531, N@20=0.1283
+   - epoch19 test: R@20=0.1546, N@20=0.1277
+   结论：
+   - 这是第一次明显突破 epoch9 这道坎
+   - 说明 step 是真正影响后期增长形态的核心参数
+
+4. latent_diffusion_set_loss_weight=0.05, step=12, lr=1e-4
+   - epoch14 test: R@20=0.1532, N@20=0.1284
+   结论：
+   - 学习率从 1e-3 降到 1e-4，并未带来明显额外收益
+   - lr 不是当前主矛盾
+
+5. latent_diffusion_set_loss_weight=0.05, step=18, lr=1e-3
+   - epoch14 test: R@20=0.1535, N@20=0.1285
+   - epoch19 test: R@20=0.1546, N@20=0.1277
+   结论：
+   - step 从 12 提到 18，收益基本饱和
+   - 说明当前 v1 的瓶颈开始更像结构瓶颈，而不是简单超参问题
+
+6. topk=3 的尝试
+   - loss_weight=0.05, step=12, lr=1e-3, topk=3
+   - epoch19 test: R@20=0.1551, N@20=0.1310
+   结论：
+   - 这是目前 latent 线最好的结果
+   - 已经非常接近原始 CBDM
+   - 说明 latent 线已经真正看到希望
+
+
+八、对目前 latent 结果的最新判断
+
+1. 我们已经可以比较有把握地说：
+   - latent 模块学去噪、学 UB 质量权重，肯定是能学的
+   - 这条线不是方向错误
+
+2. step 从 6 提到 12 后突然突破 epoch9 瓶颈，说明：
+   - 当前 latent 与 CBDM 的差距，有相当一部分确实来自“扩散过程不够深、不够像真正的 diffusion 重排器”
+
+3. 但 step 从 12 到 18 收益开始饱和，说明：
+   - 现在剩余差距不再主要来自超参
+   - 而更像当前 latent v1 的结构本身：
+     - 单中心 mean pooled latent
+     - deterministic clean prediction 迭代
+     - observed cosine 匹配
+   - 这些设计容易让后期重排器变成“高质量但偏静止的老师”
+
+4. 当前阶段的判断：
+   - latent v1 已经成功
+   - 当前应先把一个强基线定住
+   - 再考虑 latent v2 的结构升级
+
+
+九、当前最推荐保留的强基线
+
+对于 latent diffusion v1，目前最值得保留的强基线是：
+
+- latent_diffusion_set_loss_weight = 0.05
+- latent_diffusion_num_steps = 12
+- latent_diffusion_lr = 1e-3
+- rebuild_k = 3
+
+这组是目前这条线最强、最接近 CBDM 的组合。
+
+
+十、已经开发但当前优先级较低的功能
+
+1. Latent reset 机制
+   - 配置：
+     - latent_diffusion_reset_after_epoch
+     - latent_diffusion_reset_optimizer
+   - 作用：
+     - 到指定 epoch 后，只重置 latent 选择器（denoiser），不动 DCBR 主干和外部 embeddings
+   - 当前状态：
+     - 已开发
+     - 当前优先级已降低，因为 step 的正向信号更强
+     - 只有在 reset_after_epoch >= 0 时该功能才生效
+     - reset_after_epoch = -1 时，无论 reset_optimizer 是 True 还是 False，都完全不起作用
+
+2. MBM / Anchor / Weighted CBDM input
+   - 都已开发并可运行
+   - 但当前主线已经切到 latent diffusion，不再是优先路线
+
+
+十一、对 CBDM 机制的阶段性总结
+
+当前最重要的机制级判断：
+
+1. CBDM 强的不是“会换 top1”本身，而是：
+   - 共享的全局去噪器
+   - 在整行高维 bundle 空间中进行重排
+   - 所有用户在同一个 denoiser 下被共同重新排序
+
+2. CBDM 后期依然能持续涨，不是因为一直发现全新 top1，而是因为：
+   - 它在一个小的高质量候选池里持续进行结构性切换
+   - 这种切换不是随机的，而是共享全局模型驱动的
+
+3. static bottom-k 的问题更像：
+   - 好图太快被当前损失吃透
+   - 过早固定
+   - 失去后续持续重排带来的收益
+
+4. latent v1 之所以有效，是因为它首次开始复现：
+   - 共享全局重排器
+   - 用户条件性
+   - 一定程度的后期动态性
+
+5. latent v1 还没完全吃满 CBDM 涨点的原因，很可能是：
+   - 当前 diffusion 动力学还不够“真”
+   - 当前输出仍然太容易塌成“稳定中心 -> 稳定 topk”
+
+
+十二、下一步最值得继续的方向
+
+A. 短期继续实验
+1. 先以当前最优的 latent v1 强基线为起点继续验证
+2. 当前不建议再大范围扫很多小超参
+3. 如果要继续小范围调，可优先围绕：
+   - step=12 与 topk=3 附近的小范围组合
+   - 看是否还能把 epoch19 往 epoch24 的节奏推近
+
+B. 中期进入 latent v2
+我认为 latent v2 最值得优先改的，不是继续磨 lr，而是结构升级：
+
+1. 不再只用单个 mean pooled latent
+   - 可以考虑多 slot latent
+   - prototype mixture latent
+   - set encoder 输出多个 token，而不是单中心
+
+2. 让推理更像真正 diffusion
+   - 不是只做 deterministic clean prediction 反复迭代
+   - 而是更接近 posterior-style update
+   - 甚至考虑适度保留 sampling noise
+
+3. 让 bundle-level 结构关系更多参与最终打分
+   - 不要完全压缩成一个中心再做 cosine
+
+当前倾向：
+   - latent v2 最值得先改的是“单中心 latent”这一点
+
+
+十三、文档与代码交接提示
+
+1. 关键方案文档：
+   - 扩散平替CBDM方案.txt
+   - CBDM平替补充研究-损失函数思路.txt
+
+2. 当前代码里的关键模块：
+   - models/LatentDiffusionRebuilder.py
+   - models/MBMRebuilder.py
+   - models/AnchorRebuilder.py
+   - utility.py
+   - train.py
+   - configs/models/DCBR.yaml
+
+3. 当前最重要的接手背景：
+   - 主线已经从静态方案转到 latent diffusion
+   - latent v1 已经被证明有效，且是目前最接近 CBDM 的路线
+   - 当前不该再怀疑主线本身，应主要思考如何从 v1 进入 v2
+
+
+十四、一句话总总结
+
+现在最关键的阶段性结论是：
+
+我们已经证明：
+1. 只靠静态边质量不够；
+2. CBDM 的核心更像共享全局去噪器驱动下的结构性动态重排；
+3. latent diffusion v1 已经成功摸到这层机制，并通过增大 step 首次突破了 epoch9 的瓶颈；
+4. 当前最有希望的后续方向，不是再回头大范围试旧 idea，而是以 latent v1 的强基线为起点，继续向更像“共享全局高维重排器”的 latent v2 进化。
