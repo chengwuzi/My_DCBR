@@ -235,7 +235,7 @@ iFashion:
   noise_max: 0.02
   sampling_noise: False
   sampling_steps: 0
-  rebuild_k: 1
+  rebuild_k: 3
   lambda_0: 2.0
   use_weighted_cbdm_input: False
   weighted_cbdm_user_embedding_path: ''
