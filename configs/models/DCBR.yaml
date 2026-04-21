@@ -10,6 +10,9 @@ iFashion:
   latent_diffusion_denoiser_layers: 2
   latent_diffusion_dropout: 0.1
   latent_diffusion_num_steps: 12
+  latent_diffusion_num_slots: 4
+  latent_diffusion_score_agg: 'max'
+  latent_diffusion_diversity_weight: 1.0e-3
   latent_diffusion_beta_start: 1.0e-4
   latent_diffusion_beta_end: 0.02
   latent_diffusion_set_loss_weight: 0.05

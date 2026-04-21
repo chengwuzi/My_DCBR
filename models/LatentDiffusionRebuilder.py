@@ -52,6 +52,12 @@ class LatentDiffusionRebuilder(nn.Module):
         self.num_steps = conf["latent_diffusion_num_steps"]
         self.dropout = conf["latent_diffusion_dropout"]
         self.set_loss_weight = conf["latent_diffusion_set_loss_weight"]
+        self.num_slots = conf.get("latent_diffusion_num_slots", 4)
+        self.score_agg = conf.get("latent_diffusion_score_agg", "max")
+        self.diversity_weight = conf.get("latent_diffusion_diversity_weight", 1.0e-3)
+
+        if self.num_slots <= 0:
+            raise ValueError("latent_diffusion_num_slots must be positive")
 
         model_input_dim = self.embedding_dim * 4 + self.time_dim
         self.denoiser = MLP(
@@ -59,6 +65,20 @@ class LatentDiffusionRebuilder(nn.Module):
             self.hidden_dim,
             self.embedding_dim,
             num_layers=conf["latent_diffusion_denoiser_layers"],
+            dropout=self.dropout,
+        )
+        self.slot_queries = nn.Parameter(torch.empty(self.num_slots, self.embedding_dim))
+        self.slot_key = nn.Linear(self.embedding_dim, self.embedding_dim)
+        self.slot_value = nn.Linear(self.embedding_dim, self.embedding_dim)
+        self.user_to_slot = nn.Linear(
+            self.embedding_dim,
+            self.num_slots * self.embedding_dim,
+        )
+        self.slot_fusion = MLP(
+            self.embedding_dim * 4,
+            self.hidden_dim,
+            self.embedding_dim,
+            num_layers=2,
             dropout=self.dropout,
         )
 
@@ -83,6 +103,11 @@ class LatentDiffusionRebuilder(nn.Module):
 
     def reset_parameters(self):
         self.denoiser.reset_parameters()
+        nn.init.normal_(self.slot_queries, mean=0.0, std=0.02)
+        self.slot_key.reset_parameters()
+        self.slot_value.reset_parameters()
+        self.user_to_slot.reset_parameters()
+        self.slot_fusion.reset_parameters()
 
     def _time_embedding(self, timesteps):
         device = timesteps.device
@@ -100,32 +125,61 @@ class LatentDiffusionRebuilder(nn.Module):
             emb = torch.cat([emb, torch.zeros((emb.shape[0], 1), device=device)], dim=1)
         return emb
 
-    def _pool_observed(self, observed_bundle_indices, observed_mask):
+    def _encode_observed_slots(self, observed_bundle_indices, observed_mask, user_vec):
         safe_indices = observed_bundle_indices.clamp(min=0)
-        observed_vecs = self.bundle_embeddings[safe_indices]
-        observed_mask = observed_mask.unsqueeze(-1)
-        summed = (observed_vecs * observed_mask).sum(dim=1)
-        counts = observed_mask.sum(dim=1).clamp(min=1.0)
-        return summed / counts
+        observed_vecs = F.normalize(self.bundle_embeddings[safe_indices], dim=-1)
+        user_vec = F.normalize(user_vec, dim=-1)
+        keys = self.slot_key(observed_vecs)
+        values = self.slot_value(observed_vecs)
 
-    def _model_features(self, z_t, user_vec, timesteps):
-        return torch.cat(
+        batch_size = user_vec.shape[0]
+        queries = F.normalize(self.slot_queries, dim=-1).unsqueeze(0).expand(batch_size, -1, -1)
+        queries = queries + self.user_to_slot(user_vec).view(batch_size, self.num_slots, self.embedding_dim)
+
+        scores = torch.einsum("bkd,bld->bkl", queries, keys) / math.sqrt(self.embedding_dim)
+        invalid_positions = ~observed_mask.bool().unsqueeze(1)
+        scores = scores.masked_fill(invalid_positions, float("-inf"))
+        attn = torch.softmax(scores, dim=-1)
+        attn = attn.masked_fill(invalid_positions, 0.0)
+
+        slot_values = torch.einsum("bkl,bld->bkd", attn, values)
+        slot_features = torch.cat(
             [
-                z_t,
-                user_vec,
-                z_t * user_vec,
-                torch.abs(z_t - user_vec),
-                self._time_embedding(timesteps),
+                slot_values,
+                queries,
+                slot_values * queries,
+                torch.abs(slot_values - queries),
             ],
             dim=-1,
         )
+        slots = self.slot_fusion(slot_features.view(batch_size * self.num_slots, -1))
+        slots = slots.view(batch_size, self.num_slots, self.embedding_dim)
+        return F.normalize(slots, dim=-1)
+
+    def _model_features(self, z_t, user_vec, timesteps):
+        batch_size = z_t.shape[0]
+        user_slots = user_vec.unsqueeze(1).expand(-1, self.num_slots, -1)
+        time_emb = self._time_embedding(timesteps).unsqueeze(1).expand(-1, self.num_slots, -1)
+        return torch.cat(
+            [
+                z_t,
+                user_slots,
+                z_t * user_slots,
+                torch.abs(z_t - user_slots),
+                time_emb,
+            ],
+            dim=-1,
+        ).view(batch_size * self.num_slots, -1)
 
     def _predict_clean(self, z_t, user_vec, timesteps):
         features = self._model_features(z_t, user_vec, timesteps)
-        return self.denoiser(features)
+        pred = self.denoiser(features)
+        return pred.view(z_t.shape[0], self.num_slots, self.embedding_dim)
 
     def _extract(self, values, timesteps, reference):
-        out = values[timesteps].view(-1, 1)
+        out = values[timesteps]
+        while out.ndim < reference.ndim:
+            out = out.unsqueeze(-1)
         return out.expand_as(reference)
 
     def q_sample(self, z0, timesteps, noise=None):
@@ -140,8 +194,8 @@ class LatentDiffusionRebuilder(nn.Module):
         observed_indices = batch["observed_indices"]
         observed_mask = batch["observed_mask"]
 
-        z0 = self._pool_observed(observed_indices, observed_mask)
-        user_vec = self.user_embeddings[user_indices]
+        user_vec = F.normalize(self.user_embeddings[user_indices], dim=-1)
+        z0 = self._encode_observed_slots(observed_indices, observed_mask, user_vec)
         timesteps = torch.randint(0, self.num_steps, (z0.shape[0],), device=z0.device)
         noise = torch.randn_like(z0)
         z_t = self.q_sample(z0, timesteps, noise)
@@ -150,19 +204,19 @@ class LatentDiffusionRebuilder(nn.Module):
         diff_loss = F.mse_loss(z_pred, z0)
 
         safe_indices = observed_indices.clamp(min=0)
-        observed_vecs = self.bundle_embeddings[safe_indices]
-        pred_norm = F.normalize(z_pred, dim=-1).unsqueeze(1)
-        observed_norm = F.normalize(observed_vecs, dim=-1)
-        cosine = (pred_norm * observed_norm).sum(dim=-1)
-        cosine = cosine * observed_mask
-        mean_cosine = cosine.sum(dim=1) / observed_mask.sum(dim=1).clamp(min=1.0)
-        set_loss = (1.0 - mean_cosine).mean()
+        observed_vecs = F.normalize(self.bundle_embeddings[safe_indices], dim=-1)
+        pred_norm = F.normalize(z_pred, dim=-1)
+        cosine = torch.einsum("bkd,bld->bkl", pred_norm, observed_vecs)
+        bundle_coverage = cosine.max(dim=1).values * observed_mask
+        mean_coverage = bundle_coverage.sum(dim=1) / observed_mask.sum(dim=1).clamp(min=1.0)
+        set_loss = (1.0 - mean_coverage).mean()
 
-        return diff_loss + self.set_loss_weight * set_loss
+        diversity_loss = self._slot_diversity_loss(z_pred)
+        return diff_loss + self.set_loss_weight * set_loss + self.diversity_weight * diversity_loss
 
     def refine_latent(self, user_indices, observed_bundle_indices, observed_mask):
-        z = self._pool_observed(observed_bundle_indices, observed_mask)
-        user_vec = self.user_embeddings[user_indices]
+        user_vec = F.normalize(self.user_embeddings[user_indices], dim=-1)
+        z = self._encode_observed_slots(observed_bundle_indices, observed_mask, user_vec)
         for step in reversed(range(self.num_steps)):
             timesteps = torch.full((z.shape[0],), step, dtype=torch.long, device=z.device)
             z = self._predict_clean(z, user_vec, timesteps)
@@ -179,10 +233,15 @@ class LatentDiffusionRebuilder(nn.Module):
         safe_indices = observed_bundle_indices.clamp(min=0)
 
         z_star = self.refine_latent(user_indices, safe_indices, observed_mask)
-        z_norm = F.normalize(z_star, dim=-1).unsqueeze(1)
-        observed_vecs = self.bundle_embeddings[safe_indices]
-        observed_norm = F.normalize(observed_vecs, dim=-1)
-        scores = (z_norm * observed_norm).sum(dim=-1)
+        z_norm = F.normalize(z_star, dim=-1)
+        observed_vecs = F.normalize(self.bundle_embeddings[safe_indices], dim=-1)
+        slot_scores = torch.einsum("bkd,bld->bkl", z_norm, observed_vecs)
+        if self.score_agg == "max":
+            scores = slot_scores.max(dim=1).values
+        elif self.score_agg == "logsumexp":
+            scores = torch.logsumexp(slot_scores, dim=1)
+        else:
+            raise ValueError(f"Unsupported latent diffusion score aggregator {self.score_agg}")
         scores = scores.masked_fill(~valid_mask, float("-inf"))
 
         topk = min(rebuild_k, observed_bundle_indices.shape[1])
@@ -190,3 +249,13 @@ class LatentDiffusionRebuilder(nn.Module):
         selected_bundles = torch.gather(safe_indices, 1, selected_pos)
         selected_valid = torch.gather(valid_mask, 1, selected_pos)
         return selected_bundles, selected_valid
+
+    def _slot_diversity_loss(self, slots):
+        if self.num_slots <= 1:
+            return torch.zeros((), device=slots.device)
+
+        slot_norm = F.normalize(slots, dim=-1)
+        similarity = torch.einsum("bkd,bqd->bkq", slot_norm, slot_norm)
+        eye = torch.eye(self.num_slots, device=slots.device, dtype=similarity.dtype).unsqueeze(0)
+        off_diag = similarity.masked_select(~eye.bool())
+        return off_diag.square().mean()
