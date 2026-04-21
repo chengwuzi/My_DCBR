@@ -11,3 +11,10 @@
 /weightMatrix/top1_rank_position-summary.csv
 /weightMatrix/top1_set_bottomk_overlap-per-user.csv
 /weightMatrix/top1_set_bottomk_overlap-summary.csv
+/.idea/.gitignore
+/.idea/copilot.data.migration.ask2agent.xml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/My_DCBR.iml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/vcs.xml
