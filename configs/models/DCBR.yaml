@@ -3,8 +3,8 @@ iFashion:
 
   # Set-conditioned latent diffusion rebuild on external LightGCN embeddings
   use_latent_diffusion_rebuild: True
-  latent_diffusion_user_embedding_path: './weightMatrix/ifashion_gcn_emb/user_emb.pt'
-  latent_diffusion_bundle_embedding_path: './weightMatrix/ifashion_gcn_emb/bundle_emb.pt'
+  latent_diffusion_user_embedding_path: './weightMatrix/user_emb.pt'
+  latent_diffusion_bundle_embedding_path: './weightMatrix/bundle_emb.pt'
   latent_diffusion_hidden_dim: 128
   latent_diffusion_time_dim: 16
   latent_diffusion_denoiser_layers: 2
