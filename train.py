@@ -34,7 +34,6 @@ def get_cmd():
     parser.add_argument("-d", "--dataset", type=str, default="iFashion")
     parser.add_argument("-m", "--model", type=str, default="DCBR")
     parser.add_argument("-i", "--info", type=str, default="")
-    parser.add_argument("-s", "--seed", type=int, default=0)
     args = parser.parse_args()
     return args
 
@@ -183,7 +182,6 @@ def reset_latent_diffusion_rebuilder(conf, latent_diffusion_model, latent_diffus
 
 def main():
     paras = get_cmd().__dict__
-    set_seed(paras["seed"])
     conf_overall = yaml.safe_load(open("configs/overall.yaml"))
     conf_model = yaml.safe_load(open(f"configs/models/{paras['model']}.yaml"))
     print("load config file done!")
@@ -194,9 +192,13 @@ def main():
         raise ValueError("The current codebase only supports the iFashion dataset.")
 
     conf_model = conf_model["iFashion"]
-    conf = {**conf_model, **conf_overall, **paras}
+    conf = {**conf_model, **conf_overall}
+    for key, value in paras.items():
+        if value is not None:
+            conf[key] = value
     conf["dataset"] = dataset_name
     conf["model"] = paras["model"]
+    set_seed(conf["seed"])
 
     log_path = f"./logs/{conf['dataset']}/{conf['model']}"
     checkpoint_model_path = f"./checkpoints/{conf['dataset']}/{conf['model']}"
