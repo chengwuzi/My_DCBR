@@ -35,4 +35,4 @@ iFashion:
   tau: 0.08
   lambda_1: 0.3
   lambda_2: 1.0e-6
-  epochs: 20
+  epochs: 30
