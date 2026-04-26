@@ -1,5 +1,5 @@
 data_path: './datasets'
-seed: 0
+seed: 2026
 embedding_size: 64
 batch_size_train: 2048
 batch_size_test: 2048
